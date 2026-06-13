@@ -1,0 +1,24 @@
+# Data and outputs (kept local, not versioned)
+/datasets/
+/saved_models/
+/runs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# IDE / tooling
+*idea*
+*claude*
+
+# Temp folders
+/tmp/
+/temp/
+.stackdump
+
+# Legacy backup and large binary assets
+src/old_code.zip
+*.zip
+docs/*.pdf
