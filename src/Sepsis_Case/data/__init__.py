@@ -1,6 +1,6 @@
 """Input parsing and supervised prefix-dataset preparation."""
 
-from src.Sepsis_Case.data.prefixes import (
+from .prefixes import (
     PAD,
     ActivityVocabulary,
     PrefixBatch,
@@ -11,7 +11,7 @@ from src.Sepsis_Case.data.prefixes import (
     make_prefix_examples,
     split_traces,
 )
-from src.Sepsis_Case.data.xes import (
+from .xes import (
     ACTIVITY,
     CASE_ID,
     INDEX,

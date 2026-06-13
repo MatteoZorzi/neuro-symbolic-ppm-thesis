@@ -1,29 +1,29 @@
 """Readable end-to-end pipeline for the Sepsis Cases event log."""
 
-from src.Sepsis_Case.config import (
+from .config import (
     DataConfig,
     ExperimentConfig,
     ModelConfig,
     TrainingConfig,
 )
-from src.Sepsis_Case.data import (
+from .data import (
     ActivityVocabulary,
     extract_traces,
     read_xes,
     split_traces,
 )
-from src.Sepsis_Case.learning import (
+from .learning import (
     NextActivityGRU,
     NextActivityLSTM,
     NextActivityTransformer,
 )
-from src.Sepsis_Case.pipeline import (
+from .pipeline import (
     ExperimentRun,
     analyse,
     build_analysis_tables,
     run_experiment,
 )
-from src.Sepsis_Case.process import END, START, ProcessDFA
+from .process import END, START, ProcessDFA
 
 __all__ = [
     "ActivityVocabulary",

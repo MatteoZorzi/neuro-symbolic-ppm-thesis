@@ -1,18 +1,18 @@
 """Models, logic regularisation, training and evaluation."""
 
-from src.Sepsis_Case.learning.checkpoints import load_checkpoint
-from src.Sepsis_Case.learning.evaluation import EvaluationResult, evaluate_model
-from src.Sepsis_Case.learning.logic import (
+from .checkpoints import load_checkpoint
+from .evaluation import EvaluationResult, evaluate_model
+from .logic import (
     build_allowed_mask,
     forbidden_probability_mass,
 )
-from src.Sepsis_Case.learning.models import (
+from .models import (
     NextActivityGRU,
     NextActivityLSTM,
     NextActivityTransformer,
     build_model,
 )
-from src.Sepsis_Case.learning.training import TrainingResult, train_model
+from .training import TrainingResult, train_model
 
 __all__ = [
     "EvaluationResult",

@@ -1,6 +1,6 @@
 """Plots for exploratory analysis, automata and model comparisons."""
 
-from src.Sepsis_Case.visualization.plots import (
+from .plots import (
     plot_activity_frequency,
     plot_automaton,
     plot_case_durations,
