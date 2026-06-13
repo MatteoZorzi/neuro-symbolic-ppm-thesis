@@ -41,7 +41,7 @@ def build_allowed_mask(
     )
     class_to_id = vocabulary.class_to_id
     for token_id, state in enumerate(vocabulary.tokens):
-        if state == vocabulary.tokens[0]:  # Padding is never a real state.
+        if state == PAD:  # Padding is never a real state.
             mask[token_id] = True
             continue
         allowed = automaton.allowed_next.get(state, frozenset())
