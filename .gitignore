@@ -13,6 +13,9 @@ __pycache__/
 *idea*
 *claude*
 
+#hidden
+*hidden*
+
 # Temp folders
 /tmp/
 /temp/
@@ -22,3 +25,6 @@ __pycache__/
 src/old_code.zip
 *.zip
 docs/*.pdf
+
+# DO NOT PUSH
+PPM_Book.pdf
