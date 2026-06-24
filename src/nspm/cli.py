@@ -7,20 +7,24 @@ from dataclasses import replace
 import json
 from pathlib import Path
 
-from .config import ExperimentConfig, ProjectPaths
+from .config import DEFAULT_DATASET, ExperimentConfig, ProjectPaths
 from .pipeline.analysis import analyse
 from .pipeline.experiment import run_experiment
 from .pipeline.run_manager import create_next_run
 
 
 def build_parser() -> argparse.ArgumentParser:
-    defaults = ProjectPaths.from_root(Path.cwd())
-    parser = argparse.ArgumentParser(description="Sepsis Cases analysis pipeline")
+    parser = argparse.ArgumentParser(description="Neuro-symbolic PPM analysis pipeline")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     analysis_parser = subparsers.add_parser("analyze", help="Run exploratory analysis")
-    analysis_parser.add_argument("--input", type=Path, default=defaults.dataset)
-    analysis_parser.add_argument("--output-dir", type=Path, default=defaults.analysis_dir)
+    analysis_parser.add_argument("--dataset-name", default=DEFAULT_DATASET)
+    analysis_parser.add_argument(
+        "--input", type=Path, help="Explicit XES log; defaults to the dataset's log."
+    )
+    analysis_parser.add_argument(
+        "--output-dir", type=Path, help="Defaults to datasets/<dataset-name>/analysis."
+    )
     analysis_parser.add_argument("--max-cases", type=int)
     analysis_parser.add_argument("--top-n", type=int, default=20)
     analysis_parser.add_argument("--no-events-csv", action="store_true")
@@ -28,11 +32,13 @@ def build_parser() -> argparse.ArgumentParser:
     experiment_parser = subparsers.add_parser(
         "experiment", help="Train baseline and logic-aware recurrent models"
     )
-    experiment_parser.add_argument("--input", type=Path, default=defaults.dataset)
+    experiment_parser.add_argument("--dataset-name", default=DEFAULT_DATASET)
     experiment_parser.add_argument(
-        "--runs-dir", type=Path, default=defaults.runs_dir
+        "--input", type=Path, help="Explicit XES log; defaults to the dataset's log."
     )
-    experiment_parser.add_argument("--dataset-name", default="Sepsis_Case")
+    experiment_parser.add_argument(
+        "--runs-dir", type=Path, help="Run output root; defaults to ./runs."
+    )
     experiment_parser.add_argument(
         "--output-dir",
         type=Path,
@@ -86,10 +92,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
+    paths = ProjectPaths.from_root(Path.cwd(), args.dataset_name)
     if args.command == "analyze":
         summary = analyse(
-            args.input,
-            args.output_dir,
+            args.input or paths.dataset,
+            args.output_dir or paths.analysis_dir,
             max_cases=args.max_cases,
             top_n=args.top_n,
             save_events=not args.no_events_csv,
@@ -122,13 +129,13 @@ def main(argv: list[str] | None = None) -> None:
         output_dir = args.output_dir
         model_dir = args.model_dir or output_dir / "models"
     else:
-        run_paths = create_next_run(args.runs_dir, args.dataset_name)
+        run_paths = create_next_run(args.runs_dir or paths.runs_dir, args.dataset_name)
         output_dir = run_paths.root
         model_dir = args.model_dir or run_paths.models
         print(f"Run directory: {output_dir}")
 
     run = run_experiment(
-        args.input,
+        args.input or paths.dataset,
         output_dir,
         model_dir,
         config=config,

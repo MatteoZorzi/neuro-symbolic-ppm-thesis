@@ -69,6 +69,25 @@ class ProcessDFA:
     def is_allowed(self, previous: str, following: str) -> bool:
         return following in self.allowed_next.get(previous, frozenset())
 
+    def allowed_activities(self, previous: str) -> frozenset[str]:
+        """Real-activity successors observed after ``previous`` (excludes START/END).
+
+        This is the single source of truth for "which next *activities* are
+        legal" shared by the inference-time decoding mask
+        (:func:`learning.logic.build_allowed_mask`) and the generated-trace
+        conformance metric (whole-trace prediction). A state whose only observed
+        successor is ``END`` (seen only at trace end) or that was never seen as a
+        source returns the empty set: it imposes **no constraint** on the next
+        activity, so neither the mask nor the violation metric may penalise it.
+        Keeping both consumers on this method prevents them from drifting apart.
+        """
+
+        return frozenset(
+            action
+            for action in self.allowed_next.get(previous, frozenset())
+            if action not in (START, END)
+        )
+
     def accepts(self, trace: Sequence[str]) -> bool:
         """Return whether every transition, including start/end, was observed."""
 

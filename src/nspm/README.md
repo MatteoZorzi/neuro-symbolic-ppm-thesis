@@ -1,8 +1,10 @@
-# Sepsis Case pipeline
+# nspm — neuro-symbolic PPM pipeline
 
-This package turns the Sepsis Cases XES log into a reproducible next-activity
-prediction experiment. It replaces the old notebook-only implementation with
-small modules that can be tested, imported and reused.
+This package turns an XES event log into a reproducible next-activity prediction
+experiment. It replaces the old notebook-only implementation with small modules
+that can be tested, imported and reused. The Sepsis Cases log is the default
+example; other logs under `datasets/` (e.g. BPIC_2013_incidents,
+BPIC_2020_DomesticDeclarations) work via `--dataset-name`.
 
 ## Data flow
 
@@ -31,16 +33,14 @@ The learned-embedder branch of T-LEAF adds:
 ## Package structure
 
 ```text
-Sepsis_Case/
+nspm/
 |-- data/             XES parsing, traces, splits and prefix datasets
 |-- process/          empirical DFA and process-conformance rules
 |-- learning/         GRU/LSTM, logic loss, training and evaluation
 |-- visualization/    EDA, DFA and comparison plots
 |-- pipeline/         high-level analysis and experiment orchestration
-|-- tests/            tests created during the initial reconstruction
 |-- config.py         typed experiment configuration
-|-- cli.py            command-line interface
-`-- analyze_sepsis.py legacy-compatible analysis entry point
+`-- cli.py            command-line interface
 ```
 
 The split is performed by case, never by event or prefix. Consequently, prefixes
@@ -62,7 +62,7 @@ encoding and the final real prefix token for classification.
 For an equal task/logic objective, run:
 
 ```text
-python -m src.Sepsis_Case experiment --model transformer \
+python -m src.nspm experiment --model transformer \
   --task-loss-weight 0.5 --logic-weight 0.5
 ```
 
@@ -85,17 +85,11 @@ independently.
 From the repository root:
 
 ```powershell
-python -m src.Sepsis_Case analyze
-python -m src.Sepsis_Case experiment --model both --epochs 12
-python -m src.Sepsis_Case experiment --model lstm --device cpu --max-cases 200
-python -m src.Sepsis_Case experiment --model transformer --task-loss-weight 0.5 --logic-weight 0.5
-python -m src.Sepsis_Case experiment --model both --logic-weights 0.05 0.1 0.25 0.5 1.0
-```
-
-The legacy command remains valid:
-
-```powershell
-python -m src.Sepsis_Case.analyze_sepsis
+python -m src.nspm analyze
+python -m src.nspm experiment --model both --epochs 12
+python -m src.nspm experiment --model lstm --device cpu --max-cases 200
+python -m src.nspm experiment --model transformer --task-loss-weight 0.5 --logic-weight 0.5
+python -m src.nspm experiment --model both --logic-weights 0.05 0.1 0.25 0.5 1.0
 ```
 
 The executed modular notebook is available at:
@@ -134,8 +128,8 @@ Providing `--output-dir` explicitly disables automatic numbering.
 
 ```python
 from pathlib import Path
-from src.Sepsis_Case import ExperimentConfig, run_experiment
-from src.Sepsis_Case.pipeline import create_next_run
+from src.nspm import ExperimentConfig, run_experiment
+from src.nspm.pipeline import create_next_run
 
 paths = create_next_run(Path("runs"), "Sepsis_Case")
 run = run_experiment(

@@ -1,4 +1,4 @@
-"""Allow ``python -m src.Sepsis_Case`` execution."""
+"""Allow ``python -m src.nspm`` execution."""
 
 from .cli import main
 

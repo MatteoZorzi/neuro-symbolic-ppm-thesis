@@ -1,4 +1,4 @@
-"""Readable end-to-end pipeline for the Sepsis Cases event log."""
+"""Readable end-to-end neuro-symbolic next-activity pipeline for XES event logs."""
 
 from .config import (
     DataConfig,

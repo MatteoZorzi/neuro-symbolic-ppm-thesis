@@ -1,4 +1,4 @@
-"""End-to-end orchestration of Sepsis next-activity experiments."""
+"""End-to-end orchestration of next-activity experiments."""
 
 from __future__ import annotations
 

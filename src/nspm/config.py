@@ -1,4 +1,4 @@
-"""Central configuration for the Sepsis next-activity experiment."""
+"""Central configuration for the next-activity experiment."""
 
 from __future__ import annotations
 
@@ -79,9 +79,19 @@ class ExperimentConfig:
         return asdict(self)
 
 
+#: Default dataset used when none is specified on the command line.
+DEFAULT_DATASET = "Sepsis_Case"
+
+
 @dataclass(frozen=True)
 class ProjectPaths:
-    """Default project paths, resolved from the repository root."""
+    """Default project paths, resolved from the repository root.
+
+    Paths are resolved for a given dataset living under ``datasets/<name>/``.
+    The event-log file is discovered automatically (the single ``*.xes`` in the
+    dataset directory) so different logs -- Sepsis_Case, BPIC_2013_incidents,
+    BPIC_2020_DomesticDeclarations -- work without per-dataset wiring.
+    """
 
     root: Path
     dataset: Path
@@ -89,12 +99,33 @@ class ProjectPaths:
     runs_dir: Path
 
     @classmethod
-    def from_root(cls, root: Path) -> "ProjectPaths":
+    def from_root(
+        cls,
+        root: Path,
+        dataset_name: str = DEFAULT_DATASET,
+        *,
+        dataset_file: str | None = None,
+    ) -> "ProjectPaths":
         root = root.resolve()
-        dataset_dir = root / "datasets" / "Sepsis_Case"
+        dataset_dir = root / "datasets" / dataset_name
+        if dataset_file is not None:
+            dataset = dataset_dir / dataset_file
+        else:
+            dataset = cls._discover_log(dataset_dir)
         return cls(
             root=root,
-            dataset=dataset_dir / "Sepsis_Cases_Event_Log.xes",
+            dataset=dataset,
             analysis_dir=dataset_dir / "analysis",
             runs_dir=root / "runs",
         )
+
+    @staticmethod
+    def _discover_log(dataset_dir: Path) -> Path:
+        """Return the lone ``*.xes`` log in ``dataset_dir`` (conventional path otherwise)."""
+
+        candidates = sorted(dataset_dir.glob("*.xes"))
+        if not candidates:
+            # No log present (e.g. resolving defaults before data is in place):
+            # fall back to a conventional name so error messages point at the dir.
+            return dataset_dir / f"{dataset_dir.name}.xes"
+        return candidates[0]

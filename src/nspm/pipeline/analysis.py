@@ -1,7 +1,8 @@
-"""Exploratory tables and reports for the Sepsis event log."""
+"""Exploratory tables and reports for an XES event log."""
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -26,6 +27,19 @@ from ..visualization.plots import (
 
 CORE_COLUMNS = {CASE_ID, INDEX, ACTIVITY, TIMESTAMP, ORG_GROUP, LIFECYCLE}
 
+#: An outcome marker maps a boolean case-column name to a predicate over the set
+#: of activities seen in that case. Pass a custom mapping (or ``{}`` to disable)
+#: for non-Sepsis logs; these defaults encode Sepsis Cases domain knowledge.
+OutcomeMarkers = Mapping[str, Callable[[set], bool]]
+
+SEPSIS_OUTCOME_MARKERS: OutcomeMarkers = {
+    "has_return_er": lambda activities: "Return ER" in activities,
+    "has_admission_ic": lambda activities: "Admission IC" in activities,
+    "has_release": lambda activities: any(
+        str(activity).startswith("Release ") for activity in activities
+    ),
+}
+
 
 @dataclass
 class AnalysisTables:
@@ -40,8 +54,16 @@ class AnalysisTables:
     attributes: pd.DataFrame
 
 
-def build_case_table(events: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate event rows into one descriptive row per clinical case."""
+def build_case_table(
+    events: pd.DataFrame,
+    outcome_markers: OutcomeMarkers | None = SEPSIS_OUTCOME_MARKERS,
+) -> pd.DataFrame:
+    """Aggregate event rows into one descriptive row per case.
+
+    ``outcome_markers`` adds one boolean column per entry, flagging cases whose
+    activity set satisfies the predicate. Defaults to the Sepsis outcome flags;
+    pass a custom mapping or ``{}`` for other logs.
+    """
 
     ordered = events.sort_values([CASE_ID, INDEX])
     grouped = ordered.groupby(CASE_ID, sort=False)
@@ -60,17 +82,10 @@ def build_case_table(events: pd.DataFrame) -> pd.DataFrame:
     variants = grouped[ACTIVITY].agg(lambda values: " > ".join(values.astype(str)))
     cases = cases.merge(variants.rename("variant"), on=CASE_ID)
     activity_sets = grouped[ACTIVITY].agg(set)
-    cases["has_return_er"] = cases[CASE_ID].map(
-        lambda case_id: "Return ER" in activity_sets.loc[case_id]
-    )
-    cases["has_admission_ic"] = cases[CASE_ID].map(
-        lambda case_id: "Admission IC" in activity_sets.loc[case_id]
-    )
-    cases["has_release"] = cases[CASE_ID].map(
-        lambda case_id: any(
-            str(activity).startswith("Release ") for activity in activity_sets.loc[case_id]
+    for column, predicate in (outcome_markers or {}).items():
+        cases[column] = cases[CASE_ID].map(
+            lambda case_id, predicate=predicate: predicate(activity_sets.loc[case_id])
         )
-    )
     return cases
 
 
@@ -144,10 +159,13 @@ def build_attribute_table(events: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def build_analysis_tables(events: pd.DataFrame) -> AnalysisTables:
+def build_analysis_tables(
+    events: pd.DataFrame,
+    outcome_markers: OutcomeMarkers | None = SEPSIS_OUTCOME_MARKERS,
+) -> AnalysisTables:
     """Build every reusable EDA table from an event DataFrame."""
 
-    cases = build_case_table(events)
+    cases = build_case_table(events, outcome_markers)
     activities = (
         events[ACTIVITY].value_counts(dropna=False).rename_axis(ACTIVITY).rename("count").reset_index()
     )
@@ -172,6 +190,12 @@ def summarise(tables: AnalysisTables, input_path: str | Path) -> dict[str, objec
     """Create a compact JSON-compatible dataset summary."""
 
     cases = tables.cases
+    # Report counts for any outcome-marker boolean columns present.
+    outcomes = {
+        column: int(cases[column].sum())
+        for column in cases.columns
+        if column.startswith("has_") and pd.api.types.is_bool_dtype(cases[column])
+    }
     return {
         "input": str(input_path),
         "cases": int(len(cases)),
@@ -191,11 +215,7 @@ def summarise(tables: AnalysisTables, input_path: str | Path) -> dict[str, objec
             "min": float(cases["duration_hours"].min()),
             "max": float(cases["duration_hours"].max()),
         },
-        "outcomes": {
-            "return_er_cases": int(cases["has_return_er"].sum()),
-            "admission_ic_cases": int(cases["has_admission_ic"].sum()),
-            "release_cases": int(cases["has_release"].sum()),
-        },
+        "outcomes": outcomes,
         "most_common_activity": str(tables.activities.iloc[0][ACTIVITY]),
         "most_common_variant_cases": int(tables.variants.iloc[0]["count"]),
     }
@@ -207,12 +227,15 @@ def analyse(
     max_cases: int | None = None,
     top_n: int = 20,
     save_events: bool = True,
+    outcome_markers: OutcomeMarkers | None = SEPSIS_OUTCOME_MARKERS,
 ) -> dict[str, object]:
     """Run and persist the complete exploratory analysis."""
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    tables = build_analysis_tables(read_xes(input_path, max_cases=max_cases))
+    tables = build_analysis_tables(
+        read_xes(input_path, max_cases=max_cases), outcome_markers
+    )
     summary = summarise(tables, input_path)
 
     outputs = {

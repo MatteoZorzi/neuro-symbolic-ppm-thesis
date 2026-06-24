@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "neuro-symbolic-ppm"
+version = "0.1.0"
+description = "Neuro-symbolic predictive process monitoring with LTLf background knowledge (T-LEAF logic loss on XES event logs)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Matteo Zorzi" }]
+keywords = [
+    "predictive-process-monitoring",
+    "neuro-symbolic",
+    "ltlf",
+    "process-mining",
+    "graph-neural-networks",
+]
+
+# Core runtime dependencies (everything the package imports).
+# NOTE: torch and torch-geometric CUDA builds are installed from their own
+# wheel index; the conda environment file pins the exact, tested versions.
+# These bounds only express the minimum the code relies on.
+dependencies = [
+    "numpy>=1.26,<2",
+    "pandas>=2.0",
+    "scikit-learn>=1.3",
+    "matplotlib>=3.7",
+    "networkx>=3.0",
+    "pm4py>=2.7",
+    "torch>=2.0",
+    "torch-geometric>=2.5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.5"]
+
+[project.scripts]
+# Console entry point: `nspm experiment ...` once installed.
+nspm = "src.nspm.cli:main"
+
+[tool.setuptools.packages.find]
+# Import path `src.nspm` so notebooks, the READMEs and `python -m src.nspm`
+# all work after `pip install -e .`.
+where = ["."]
+include = ["src*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

@@ -32,8 +32,12 @@ def build_allowed_mask(
 ) -> torch.Tensor:
     """Map the last input token to the classes allowed by the automaton.
 
-    A state with no known outgoing action receives an all-true row. This
-    conservative fallback avoids forcing an arbitrary action for unseen states.
+    The legal next activities come from :meth:`ProcessDFA.allowed_activities`,
+    the single source of truth shared with the generated-trace conformance
+    metric. A state with no known real-activity successor (seen only at trace
+    end, or never seen as a source) receives an all-true row: this conservative
+    fallback avoids forcing an arbitrary action for unconstrained states, and
+    the conformance metric mirrors it by not penalising those transitions.
     """
 
     mask = torch.zeros(
@@ -44,9 +48,10 @@ def build_allowed_mask(
         if state == PAD:  # Padding is never a real state.
             mask[token_id] = True
             continue
-        allowed = automaton.allowed_next.get(state, frozenset())
         allowed_classes = [
-            class_to_id[action] for action in allowed if action in class_to_id
+            class_to_id[action]
+            for action in automaton.allowed_activities(state)
+            if action in class_to_id
         ]
         if allowed_classes:
             mask[token_id, allowed_classes] = True

@@ -40,22 +40,22 @@ conda activate tleaf
 ## Usage
 
 Run all commands from the repository root (the package is imported as
-`src.Sepsis_Case`).
+`src.nspm`).
 
 Descriptive process analysis on the XES log:
 
 ```bash
-python -m src.Sepsis_Case analyze
+python -m src.nspm analyze
 ```
 
 Train baselines and logic-aware variants (checker branch) and compare them:
 
 ```bash
-python -m src.Sepsis_Case experiment --model both
+python -m src.nspm experiment --model both
 ```
 
 The learned-embedder branch (full T-LEAF logic loss) is driven from the
-notebook / Python API; see `src/Sepsis_Case/README.md`.
+notebook / Python API; see `src/nspm/README.md`.
 
 Place the event log at `./datasets/Sepsis_Case/Sepsis_Cases_Event_Log.xes`;
 results, tables and plots are written under `./datasets/Sepsis_Case/` and
@@ -64,7 +64,7 @@ results, tables and plots are written under `./datasets/Sepsis_Case/` and
 ## Repository layout
 
 ```text
-src/Sepsis_Case/      neuro-symbolic predictive-monitoring pipeline (the project)
+src/nspm/      neuro-symbolic predictive-monitoring pipeline (the project)
   data/               XES parsing, traces, splits, prefix datasets
   process/            empirical DFA + LTLf constraints + graph encoding
   learning/           GRU/LSTM/Transformer, logic losses, embedder, training
@@ -77,7 +77,7 @@ docs/                 ARCHITECTURE.md (reading map) and review notes
 ## Documentation
 
 - `docs/ARCHITECTURE.md` — module dependency graph and recommended reading order.
-- `src/Sepsis_Case/README.md` — detailed package documentation and data flow.
+- `src/nspm/README.md` — detailed package documentation and data flow.
 - `docs/CODE_REVIEW_NOTES.md` — design/cleanup notes.
 
 ## Credits & citation
