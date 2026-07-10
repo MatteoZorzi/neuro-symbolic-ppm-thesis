@@ -34,7 +34,7 @@ from typing import Mapping, Sequence
 import torch
 from torch import nn
 
-from ..data.prefixes import ActivityVocabulary
+from ..data.preparation import ActivityVocabulary
 from ..process.automaton import START, ProcessDFA
 from ..process.ltl_constraints import PrecedenceConstraint
 

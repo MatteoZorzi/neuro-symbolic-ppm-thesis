@@ -1,4 +1,4 @@
-"""Exploratory tables and reports for an XES event log."""
+# Exploratory tables and reports for an XES / CSV event log
 
 from __future__ import annotations
 
@@ -6,30 +6,17 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import json
 from pathlib import Path
-
 import pandas as pd
 
-from ..data.xes import (
-    ACTIVITY,
-    CASE_ID,
-    INDEX,
-    LIFECYCLE,
-    ORG_GROUP,
-    TIMESTAMP,
-    read_xes,
-)
-from ..visualization.plots import (
-    plot_activity_frequency,
-    plot_case_durations,
-    plot_variants,
-)
+from ..data.loader import ACTIVITY, CASE_ID, INDEX, LIFECYCLE, ORG_GROUP, TIMESTAMP, read_log
+from ..visualization.plots import plot_activity_frequency, plot_case_durations, plot_variants
 
 
 CORE_COLUMNS = {CASE_ID, INDEX, ACTIVITY, TIMESTAMP, ORG_GROUP, LIFECYCLE}
 
 #: An outcome marker maps a boolean case-column name to a predicate over the set
-#: of activities seen in that case. Pass a custom mapping (or ``{}`` to disable)
-#: for non-Sepsis logs; these defaults encode Sepsis Cases domain knowledge.
+#: of activities seen in that case. None by default; pass SEPSIS_OUTCOME_MARKERS
+#: (Sepsis Cases domain knowledge) or a custom mapping where relevant.
 OutcomeMarkers = Mapping[str, Callable[[set], bool]]
 
 SEPSIS_OUTCOME_MARKERS: OutcomeMarkers = {
@@ -43,7 +30,7 @@ SEPSIS_OUTCOME_MARKERS: OutcomeMarkers = {
 
 @dataclass
 class AnalysisTables:
-    """All tabular products generated during exploratory analysis."""
+    # All tabular products generated during exploratory analysis
 
     events: pd.DataFrame
     cases: pd.DataFrame
@@ -54,15 +41,11 @@ class AnalysisTables:
     attributes: pd.DataFrame
 
 
-def build_case_table(
-    events: pd.DataFrame,
-    outcome_markers: OutcomeMarkers | None = SEPSIS_OUTCOME_MARKERS,
-) -> pd.DataFrame:
+def build_case_table(events: pd.DataFrame, outcome_markers: OutcomeMarkers | None = None) -> pd.DataFrame:
     """Aggregate event rows into one descriptive row per case.
 
     ``outcome_markers`` adds one boolean column per entry, flagging cases whose
-    activity set satisfies the predicate. Defaults to the Sepsis outcome flags;
-    pass a custom mapping or ``{}`` for other logs.
+    activity set satisfies the predicate. None (default) adds no columns.
     """
 
     ordered = events.sort_values([CASE_ID, INDEX])
@@ -159,10 +142,7 @@ def build_attribute_table(events: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def build_analysis_tables(
-    events: pd.DataFrame,
-    outcome_markers: OutcomeMarkers | None = SEPSIS_OUTCOME_MARKERS,
-) -> AnalysisTables:
+def build_analysis_tables(events: pd.DataFrame, outcome_markers: OutcomeMarkers | None = None) -> AnalysisTables:
     """Build every reusable EDA table from an event DataFrame."""
 
     cases = build_case_table(events, outcome_markers)
@@ -187,7 +167,7 @@ def build_analysis_tables(
 
 
 def summarise(tables: AnalysisTables, input_path: str | Path) -> dict[str, object]:
-    """Create a compact JSON-compatible dataset summary."""
+    # Create a compact JSON dataset summary
 
     cases = tables.cases
     # Report counts for any outcome-marker boolean columns present.
@@ -221,20 +201,13 @@ def summarise(tables: AnalysisTables, input_path: str | Path) -> dict[str, objec
     }
 
 
-def analyse(
-    input_path: str | Path,
-    output_dir: str | Path,
-    max_cases: int | None = None,
-    top_n: int = 20,
-    save_events: bool = True,
-    outcome_markers: OutcomeMarkers | None = SEPSIS_OUTCOME_MARKERS,
-) -> dict[str, object]:
+def analyse(input_path: str | Path, output_dir: str | Path, max_cases: int | None = None, top_n: int = 20, save_events: bool = True, outcome_markers: OutcomeMarkers | None = None) -> dict[str, object]:
     """Run and persist the complete exploratory analysis."""
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     tables = build_analysis_tables(
-        read_xes(input_path, max_cases=max_cases), outcome_markers
+        read_log(input_path, max_cases=max_cases), outcome_markers
     )
     summary = summarise(tables, input_path)
 

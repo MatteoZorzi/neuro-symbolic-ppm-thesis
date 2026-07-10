@@ -20,7 +20,7 @@ from typing import Sequence
 
 import torch
 
-from ..data.prefixes import ActivityVocabulary, PAD
+from ..data.preparation import ActivityVocabulary, PAD
 from ..process.automaton import ProcessDFA, START
 from ..process.graph_encoding import FeatureSpace
 from ..process.ltl_constraints import PrecedenceConstraint, relevant_constraints

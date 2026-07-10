@@ -20,11 +20,10 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from ..config import ExperimentConfig
-from ..data.prefixes import ActivityVocabulary, PrefixBatch
-from .checkpoints import save_checkpoint
+from ..data.preparation import ActivityVocabulary, PrefixBatch
 from .evaluation import EvaluationResult, evaluate_model
 from .logic import forbidden_probability_mass
-from .models import ModelKind, build_model
+from .models import ModelKind, build_model, save_checkpoint
 
 
 def set_random_seed(seed: int) -> None:

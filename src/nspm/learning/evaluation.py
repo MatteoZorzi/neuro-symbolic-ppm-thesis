@@ -10,7 +10,7 @@ from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_sc
 from torch import nn
 from torch.utils.data import DataLoader
 
-from ..data.prefixes import PrefixBatch
+from ..data.preparation import PrefixBatch
 from .logic import (
     forbidden_probability_mass,
     last_token_ids,

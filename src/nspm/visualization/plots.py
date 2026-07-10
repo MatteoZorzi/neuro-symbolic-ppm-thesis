@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.patches import Circle, Rectangle
 
-from ..data.xes import ACTIVITY
+from ..data.loader import ACTIVITY
 from ..process.automaton import END, START, ProcessDFA
 from ..process.ltl_constraints import ConstraintDFA, Guard, PrecedenceConstraint
 
@@ -418,6 +418,7 @@ def plot_fraction_curves(
     *,
     mode_col: str = "logic_mode",
     x_col: str = "n_train_cases",
+    x_label: str = "training cases",
     titles: Mapping[str, str] | None = None,
     suptitle: str | None = None,
 ) -> None:
@@ -439,7 +440,7 @@ def plot_fraction_curves(
             subset = grid[grid[mode_col] == mode]
             series = subset.groupby(x_col)[metric].mean().reindex(order)
             ax.plot(order, series.values, marker="o", label=str(mode))
-        ax.set_xlabel("training cases")
+        ax.set_xlabel(x_label)
         ax.set_title(titles.get(metric, metric))
         ax.grid(alpha=0.25)
         ax.legend(fontsize=8)
