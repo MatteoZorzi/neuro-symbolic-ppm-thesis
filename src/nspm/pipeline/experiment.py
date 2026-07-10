@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import json
+import re
 from pathlib import Path
 from typing import Iterable
 
@@ -11,14 +12,13 @@ import pandas as pd
 import torch
 
 from ..config import ExperimentConfig
-from ..data.prefixes import (
+from ..data.preparation import (
     ActivityVocabulary,
-    extract_traces,
-    make_data_loader,
-    make_prefix_examples,
-    split_traces,
+    PrefixLog,
+    TraceSplits,
+    TraceUtils,
 )
-from ..data.xes import read_xes
+from ..data.loader import read_log
 from ..learning.evaluation import EvaluationResult, evaluate_model
 from ..learning.logic import EmbeddingLogicLoss, build_allowed_mask
 from ..learning.models import ModelKind
@@ -35,6 +35,51 @@ from ..visualization.plots import (
 from .analysis import build_analysis_tables, summarise
 
 
+# ------------------------------------------------------------------ run folders
+
+@dataclass(frozen=True)
+class RunPaths:
+    """All writable locations belonging to a single experiment run."""
+
+    root: Path
+    models: Path
+
+
+def _safe_name(dataset_name: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", dataset_name).strip("_")
+    if not cleaned:
+        raise ValueError("dataset_name must contain an alphanumeric character.")
+    return cleaned
+
+
+def create_next_run(runs_dir: str | Path, dataset_name: str) -> RunPaths:
+    """Atomically create ``<dataset>_run_N`` with the next available index."""
+
+    runs_dir = Path(runs_dir).resolve()
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    prefix = f"{_safe_name(dataset_name)}_run_"
+    indices = []
+    for candidate in runs_dir.glob(f"{prefix}*"):
+        suffix = candidate.name.removeprefix(prefix)
+        if candidate.is_dir() and suffix.isdigit():
+            indices.append(int(suffix))
+
+    index = max(indices, default=0) + 1
+    while True:
+        root = runs_dir / f"{prefix}{index}"
+        try:
+            root.mkdir()
+            break
+        except FileExistsError:
+            index += 1
+
+    models = root / "models"
+    models.mkdir()
+    return RunPaths(root=root, models=models)
+
+
+# ------------------------------------------------------------------- experiment
+
 @dataclass
 class ExperimentRun:
     """In-memory products of one complete experiment."""
@@ -47,8 +92,8 @@ class ExperimentRun:
 
 
 def _make_loaders(events: pd.DataFrame, config: ExperimentConfig):
-    traces = extract_traces(events)
-    splits = split_traces(
+    traces = TraceUtils.extract_traces(events)
+    splits = TraceSplits.from_traces(
         traces,
         validation_fraction=config.data.validation_fraction,
         test_fraction=config.data.test_fraction,
@@ -68,19 +113,17 @@ def _make_loaders(events: pd.DataFrame, config: ExperimentConfig):
         raise ValueError(f"Held-out cases contain unseen activities: {sorted(unseen)}")
 
     examples = {
-        "train": make_prefix_examples(splits.train, vocabulary),
-        "validation": make_prefix_examples(splits.validation, vocabulary),
-        "test": make_prefix_examples(splits.test, vocabulary),
+        "train": PrefixLog.from_traces(splits.train, vocabulary),
+        "validation": PrefixLog.from_traces(splits.validation, vocabulary),
+        "test": PrefixLog.from_traces(splits.test, vocabulary),
     }
     loaders = {
-        name: make_data_loader(
-            partition,
-            vocabulary,
+        name: log.data_loader(
             batch_size=config.data.batch_size,
             shuffle=name == "train",
             num_workers=config.data.num_workers,
         )
-        for name, partition in examples.items()
+        for name, log in examples.items()
     }
     return splits, vocabulary, examples, loaders
 
@@ -130,7 +173,7 @@ def run_experiment(
     output_dir.mkdir(parents=True, exist_ok=True)
     model_dir.mkdir(parents=True, exist_ok=True)
 
-    events = read_xes(input_path, max_cases=max_cases)
+    events = read_log(input_path, max_cases=max_cases)
     tables = build_analysis_tables(events)
     splits, vocabulary, examples, loaders = _make_loaders(events, config)
     automaton = ProcessDFA.from_traces(splits.train.values())
