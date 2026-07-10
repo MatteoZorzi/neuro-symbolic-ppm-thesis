@@ -18,6 +18,7 @@ __pycache__/
 
 # Temp folders
 /tmp/
+scripts/
 /temp/
 .stackdump
 
