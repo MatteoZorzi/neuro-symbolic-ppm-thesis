@@ -40,7 +40,7 @@ notebooks = ["nbclient>=0.9", "nbformat>=5.9", "nbconvert>=7.0"]
 
 [project.scripts]
 # Console entry point: `nspm experiment ...` once installed.
-nspm = "src.nspm.cli:main"
+nspm = "src.nspm.__main__:main"
 
 [tool.setuptools.packages.find]
 # Import path `src.nspm` so notebooks, the READMEs and `python -m src.nspm`

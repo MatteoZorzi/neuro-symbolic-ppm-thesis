@@ -8,9 +8,11 @@ BPIC_2020_DomesticDeclarations) work via `--dataset-name`.
 
 ## Data flow
 
-1. `data/xes.py` parses the XES file into one row per event.
+1. `data/loader.py` parses the XES (or CSV) file into one row per event.
 2. `pipeline/analysis.py` builds case, activity, variant and transition tables.
-3. `data/prefixes.py` splits cases and creates one example per trace prefix.
+3. `data/preparation.py` splits cases and creates one example per trace prefix
+   (`TraceSplits`, `ActivityVocabulary`, `PrefixLog` — including label
+   corruption for the robustness study).
 4. `process/automaton.py` learns a DFA from the training partition only.
 5. `learning/models.py` provides GRU, LSTM and causal Transformer models.
 6. `learning/logic.py` provides both logic losses (checker and embedder).
@@ -34,13 +36,13 @@ The learned-embedder branch of T-LEAF adds:
 
 ```text
 nspm/
-|-- data/             XES parsing, traces, splits and prefix datasets
+|-- data/             XES/CSV parsing, traces, splits and prefix datasets
 |-- process/          empirical DFA and process-conformance rules
 |-- learning/         GRU/LSTM, logic loss, training and evaluation
 |-- visualization/    EDA, DFA and comparison plots
 |-- pipeline/         high-level analysis and experiment orchestration
 |-- config.py         typed experiment configuration
-`-- cli.py            command-line interface
+`-- __main__.py       command-line interface
 ```
 
 The split is performed by case, never by event or prefix. Consequently, prefixes
@@ -95,7 +97,7 @@ python -m src.nspm experiment --model both --logic-weights 0.05 0.1 0.25 0.5 1.0
 The executed modular notebook is available at:
 
 ```text
-notebooks/Sepsis_Case_Modular_TLEAF.ipynb
+notebooks/old/Sepsis_Case_Modular_TLEAF.ipynb
 ```
 
 The experiment writes:
