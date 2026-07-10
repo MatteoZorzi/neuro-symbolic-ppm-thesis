@@ -11,13 +11,15 @@ from .prefixes import (
     make_prefix_examples,
     split_traces,
 )
-from .xes import (
+from .loader import (
     ACTIVITY,
     CASE_ID,
     INDEX,
     LIFECYCLE,
     ORG_GROUP,
     TIMESTAMP,
+    read_csv,
+    read_log,
     read_xes,
 )
 
@@ -36,6 +38,8 @@ __all__ = [
     "extract_traces",
     "make_data_loader",
     "make_prefix_examples",
+    "read_csv",
+    "read_log",
     "read_xes",
     "split_traces",
 ]

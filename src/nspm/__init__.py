@@ -9,6 +9,8 @@ from .config import (
 from .data import (
     ActivityVocabulary,
     extract_traces,
+    read_csv,
+    read_log,
     read_xes,
     split_traces,
 )
@@ -41,6 +43,8 @@ __all__ = [
     "analyse",
     "build_analysis_tables",
     "extract_traces",
+    "read_csv",
+    "read_log",
     "read_xes",
     "run_experiment",
     "split_traces",
