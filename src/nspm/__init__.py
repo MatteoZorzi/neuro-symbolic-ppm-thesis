@@ -1,4 +1,4 @@
-"""Readable end-to-end neuro-symbolic next-activity pipeline for XES event logs."""
+# Readable end-to-end neuro-symbolic next-activity pipeline for XES event logs
 
 from .config import (
     DataConfig,
@@ -8,11 +8,11 @@ from .config import (
 )
 from .data import (
     ActivityVocabulary,
-    extract_traces,
+    TraceSplits,
+    TraceUtils,
     read_csv,
     read_log,
     read_xes,
-    split_traces,
 )
 from .learning import (
     NextActivityGRU,
@@ -39,13 +39,13 @@ __all__ = [
     "NextActivityTransformer",
     "ProcessDFA",
     "START",
+    "TraceSplits",
+    "TraceUtils",
     "TrainingConfig",
     "analyse",
     "build_analysis_tables",
-    "extract_traces",
     "read_csv",
     "read_log",
     "read_xes",
     "run_experiment",
-    "split_traces",
 ]

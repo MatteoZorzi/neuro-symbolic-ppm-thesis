@@ -1,6 +1,5 @@
-"""Models, logic regularisation, training and evaluation."""
+# Models, logic regularization, training and evaluation
 
-from .checkpoints import load_checkpoint
 from .evaluation import EvaluationResult, evaluate_model
 from .logic import (
     build_allowed_mask,
@@ -11,6 +10,7 @@ from .models import (
     NextActivityLSTM,
     NextActivityTransformer,
     build_model,
+    load_checkpoint,
 )
 from .trace_prediction import (
     TracePredictionResult,

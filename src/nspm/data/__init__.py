@@ -1,15 +1,14 @@
 """Input parsing and supervised prefix-dataset preparation."""
 
-from .prefixes import (
+from .preparation import (
     PAD,
     ActivityVocabulary,
     PrefixBatch,
     PrefixDataset,
+    PrefixExample,
+    PrefixLog,
     TraceSplits,
-    extract_traces,
-    make_data_loader,
-    make_prefix_examples,
-    split_traces,
+    TraceUtils
 )
 from .loader import (
     ACTIVITY,
@@ -34,13 +33,12 @@ __all__ = [
     "ActivityVocabulary",
     "PrefixBatch",
     "PrefixDataset",
+    "PrefixExample",
+    "PrefixLog",
     "TraceSplits",
-    "extract_traces",
-    "make_data_loader",
-    "make_prefix_examples",
+    "TraceUtils",
     "read_csv",
     "read_log",
     "read_xes",
-    "split_traces",
 ]
 
