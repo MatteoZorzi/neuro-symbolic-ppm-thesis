@@ -35,6 +35,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.5"]
+# Notebook execution and PDF export for the experiment notebooks.
+notebooks = ["nbclient>=0.9", "nbformat>=5.9", "nbconvert>=7.0"]
 
 [project.scripts]
 # Console entry point: `nspm experiment ...` once installed.
