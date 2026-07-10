@@ -1,4 +1,4 @@
-"""Central configuration for the next-activity experiment."""
+# Central configuration for the next-activity experiment
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Any
 
 @dataclass(frozen=True)
 class DataConfig:
-    """Dataset split and batching parameters."""
+    # Dataset split and batching parameters
 
     validation_fraction: float = 0.15
     test_fraction: float = 0.15
@@ -24,7 +24,7 @@ class DataConfig:
 
 @dataclass(frozen=True)
 class ModelConfig:
-    """Shared and architecture-specific model dimensions."""
+    # Shared and architecture-specific model dimensions
 
     embedding_dim: int = 32
     hidden_dim: int = 64
@@ -41,7 +41,7 @@ class ModelConfig:
 
 @dataclass(frozen=True)
 class TrainingConfig:
-    """Optimisation and logic-regularisation parameters."""
+    # Optimisation and logic-regularization parameters
 
     epochs: int = 12
     learning_rate: float = 2e-3
@@ -68,7 +68,7 @@ class TrainingConfig:
 
 @dataclass(frozen=True)
 class ExperimentConfig:
-    """Complete, serialisable experiment configuration."""
+    # Complete, serializable experiment configuration
 
     seed: int = 42
     data: DataConfig = field(default_factory=DataConfig)
@@ -78,20 +78,13 @@ class ExperimentConfig:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
-
-#: Default dataset used when none is specified on the command line.
+#: Default dataset used when none is specified on the command line
 DEFAULT_DATASET = "Sepsis_Case"
 
 
 @dataclass(frozen=True)
 class ProjectPaths:
-    """Default project paths, resolved from the repository root.
-
-    Paths are resolved for a given dataset living under ``datasets/<name>/``.
-    The event-log file is discovered automatically (the single ``*.xes`` in the
-    dataset directory) so different logs -- Sepsis_Case, BPIC_2013_incidents,
-    BPIC_2020_DomesticDeclarations -- work without per-dataset wiring.
-    """
+    # Default project paths, resolved from the repository root
 
     root: Path
     dataset: Path
@@ -99,13 +92,7 @@ class ProjectPaths:
     runs_dir: Path
 
     @classmethod
-    def from_root(
-        cls,
-        root: Path,
-        dataset_name: str = DEFAULT_DATASET,
-        *,
-        dataset_file: str | None = None,
-    ) -> "ProjectPaths":
+    def from_root(cls, root: Path, dataset_name: str = DEFAULT_DATASET, *, dataset_file: str | None = None) -> "ProjectPaths":
         root = root.resolve()
         dataset_dir = root / "datasets" / dataset_name
         if dataset_file is not None:
@@ -121,9 +108,9 @@ class ProjectPaths:
 
     @staticmethod
     def _discover_log(dataset_dir: Path) -> Path:
-        """Return the lone ``*.xes`` log in ``dataset_dir`` (conventional path otherwise)."""
+        # Return the lone ``*.xes``/``*.csv`` log in ``dataset_dir`` (conventional path otherwise)
 
-        candidates = sorted(dataset_dir.glob("*.xes"))
+        candidates = sorted(dataset_dir.glob("*.xes")) or sorted(dataset_dir.glob("*.csv"))
         if not candidates:
             # No log present (e.g. resolving defaults before data is in place):
             # fall back to a conventional name so error messages point at the dir.
