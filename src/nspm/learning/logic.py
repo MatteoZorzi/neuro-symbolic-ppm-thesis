@@ -129,7 +129,7 @@ def precedence_violation_rate(
     violations = 0
     for raw_batch in data_loader:
         batch = raw_batch.to(device)
-        predictions = model(batch.tokens, batch.lengths).argmax(dim=1)
+        predictions = model(batch.tokens, batch.lengths, batch.markings).argmax(dim=1)
         for i in range(predictions.size(0)):
             total += 1
             predicted = activities[int(predictions[i])]

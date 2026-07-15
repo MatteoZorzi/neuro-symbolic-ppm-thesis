@@ -5,7 +5,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, replace
 from functools import partial
-from typing import Iterable, Iterator, Mapping, Sequence
+from typing import Iterable, Iterator, Mapping, Sequence, TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -16,6 +16,8 @@ from torch.utils.data import DataLoader, Dataset
 
 from ..process.automaton import START
 from .loader import ACTIVITY, CASE_ID, INDEX
+if TYPE_CHECKING:
+    from ..process.petrinet import PetriNet
 
 PAD = "<PAD>"
 
@@ -118,10 +120,11 @@ class ActivityVocabulary:
 
 @dataclass(frozen=True)
 class PrefixExample:
+
     case_id: str
     token_ids: tuple[int, ...]
     target_id: int
-
+    marking: tuple[int, ...] | None = None
 
 class PrefixDataset(Dataset):
     # Thin Dataset wrapper around pre-encoded variable-length prefixes
@@ -138,10 +141,12 @@ class PrefixDataset(Dataset):
 
 @dataclass
 class PrefixBatch:
+
     case_ids: list[str]
     tokens: torch.Tensor
     lengths: torch.Tensor
     targets: torch.Tensor
+    markings: torch.Tensor | None
 
     def to(self, device: torch.device) -> "PrefixBatch":
         return PrefixBatch(
@@ -149,6 +154,7 @@ class PrefixBatch:
             tokens=self.tokens.to(device),
             lengths=self.lengths.to(device),
             targets=self.targets.to(device),
+            markings=self.markings.to(device) if self.markings is not None else None,
         )
 
 def collate_prefixes(examples: Sequence[PrefixExample], pad_id: int) -> PrefixBatch:
@@ -159,6 +165,7 @@ def collate_prefixes(examples: Sequence[PrefixExample], pad_id: int) -> PrefixBa
         tokens=pad_sequence(sequences, batch_first=True, padding_value=pad_id),
         lengths=torch.tensor([len(sequence) for sequence in sequences], dtype=torch.long),
         targets=torch.tensor([example.target_id for example in examples], dtype=torch.long),
+        markings=None if examples[0].marking is None else torch.stack([torch.tensor(example.marking, dtype=torch.float32) for example in examples]),
     )
 
 
@@ -205,6 +212,16 @@ class PrefixLog:
             collate_fn=partial(collate_prefixes,
             pad_id=self.vocabulary.pad_id),
         )
+
+    def with_markings(self, petrinet: PetriNet) -> PrefixLog:
+
+        vocab_tokes = self.vocabulary.tokens
+        markings_log: list[PrefixExample] = []
+        for example in self.examples:
+            prefix = [vocab_tokes[token_id] for token_id in example.token_ids[1:]]
+            markings_log.append(replace(example, marking=petrinet.prefix_marking(prefix)))
+
+        return PrefixLog(tuple(markings_log), self.vocabulary)
 
     def corrupt_targets(self, fraction: float, rng: random.Random) -> tuple["PrefixLog", int]:
         # Replace the target of "fraction" of examples with a random activity

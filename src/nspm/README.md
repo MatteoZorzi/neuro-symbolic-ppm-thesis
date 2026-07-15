@@ -32,6 +32,26 @@ The learned-embedder branch of T-LEAF adds:
 - `learning/logic.py` (`EmbeddingLogicLoss`) is the T-LEAF logic loss
   `||q(A) - q(w_pred)||^2`, differentiable w.r.t. the task model.
 
+The marking branch (Petri net; Steps 0-2 done, Step 3 — marking sequences —
+next) adds:
+
+- `process/petrinet.py` discovers a Petri net from the training traces
+  (pm4py inductive miner), computes per-prefix markings via token replay and
+  exposes the bipartite place/transition adjacency matrices.
+- `PrefixLog.with_markings` attaches each prefix's marking to its examples;
+  the recurrent models take an injected `marking_encoder` (contract:
+  `forward(markings) -> (B, output_dim)`): `FlatMarkingEncoder` (identity,
+  kinds `gru_marking`/`lstm_marking`) or `HeteroGraphEncoder` (hand-rolled
+  two-hop message passing over the bipartite graph, kinds
+  `gru_gnn`/`lstm_gnn`). `build_model` picks the encoder from the kind;
+  checkpoints carry the adjacency matrices.
+- Ablation kill test (`scripts/step1_marking_kill_test.py`, 5 seeds): the
+  flat marking concat does not move accuracy (noise) but lowers forbidden
+  mass in 5/5 seeds; the static hetero GNN does not move accuracy either
+  (−0.20 ± 0.33 pt vs flat) — consistent with loop overwriting on the final
+  snapshot. Step 3 (TACO-style): per-event marking sequences processed
+  recurrently.
+
 ## Package structure
 
 ```text

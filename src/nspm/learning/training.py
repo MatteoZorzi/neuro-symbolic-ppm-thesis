@@ -21,6 +21,7 @@ from torch.utils.data import DataLoader
 
 from ..config import ExperimentConfig
 from ..data.preparation import ActivityVocabulary, PrefixBatch
+from ..process.petrinet import AdjacencyMatrix
 from .evaluation import EvaluationResult, evaluate_model
 from .logic import forbidden_probability_mass
 from .models import ModelKind, build_model, save_checkpoint
@@ -71,6 +72,8 @@ def train_model(
     logic_mode: str = "checker",
     embedding_logic=None,
     epoch_callback: Callable[[dict[str, float]], None] | None = None,
+    marking_dim: int = 0,
+    adjacency: tuple[AdjacencyMatrix, AdjacencyMatrix] | None = None,
 ) -> TrainingResult:
     """Train one model and restore the epoch with best validation loss.
 
@@ -94,6 +97,8 @@ def train_model(
         number_of_classes=len(vocabulary.activities),
         pad_id=vocabulary.pad_id,
         config=config.model,
+        marking_dim=marking_dim,
+        adjacency=adjacency,
     ).to(device)
     allowed_mask = allowed_mask.to(device)
     criterion = nn.CrossEntropyLoss()
@@ -121,7 +126,7 @@ def train_model(
         for raw_batch in train_loader:
             batch: PrefixBatch = raw_batch.to(device)
             optimizer.zero_grad(set_to_none=True)
-            logits = model(batch.tokens, batch.lengths)
+            logits = model(batch.tokens, batch.lengths, batch.markings)
             cross_entropy = criterion(logits, batch.targets)
             # Forbidden mass is tracked in every mode as a conformance measure.
             forbidden_mass = forbidden_probability_mass(
