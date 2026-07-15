@@ -125,6 +125,7 @@ class PrefixExample:
     token_ids: tuple[int, ...]
     target_id: int
     marking: tuple[int, ...] | None = None
+    marking_sequence: tuple[tuple[int, ...], ...] | None = None
 
 class PrefixDataset(Dataset):
     # Thin Dataset wrapper around pre-encoded variable-length prefixes
@@ -222,6 +223,32 @@ class PrefixLog:
             markings_log.append(replace(example, marking=petrinet.prefix_marking(prefix)))
 
         return PrefixLog(tuple(markings_log), self.vocabulary)
+
+    def with_marking_sequences(self, petrinet: PetriNet) -> PrefixLog:
+        # One replay chain per case: the longest prefix's marking sequence
+        # contains every shorter prefix's sequence as a slice.
+
+        vocab_tokens = self.vocabulary.tokens
+        initial = petrinet.prefix_marking(())
+
+        # from_traces emits each case's examples from shortest to longest
+        # prefix, so the last write per case_id keeps the longest one
+        longest: dict[str, PrefixExample] = {}
+        for example in self.examples:
+            longest[example.case_id] = example
+
+        sequences: dict[str, tuple[tuple[int, ...], ...]] = {}
+        for case_id, example in longest.items():
+            prefix = [vocab_tokens[token_id] for token_id in example.token_ids[1:]]
+            sequences[case_id] = petrinet.marking_sequence(prefix)
+
+        sequences_log: list[PrefixExample] = []
+        for example in self.examples:
+            events = len(example.token_ids) - 1  # START is not an event
+            sequence = (initial,) + sequences[example.case_id][:events]
+            sequences_log.append(replace(example, marking_sequence=sequence))
+
+        return PrefixLog(tuple(sequences_log), self.vocabulary)
 
     def corrupt_targets(self, fraction: float, rng: random.Random) -> tuple["PrefixLog", int]:
         # Replace the target of "fraction" of examples with a random activity

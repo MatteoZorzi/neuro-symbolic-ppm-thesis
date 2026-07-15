@@ -49,6 +49,11 @@ class PetriNet:
 
         return tuple(vector)
 
+    def marking_sequence(self, prefix: Sequence[str]) -> tuple[tuple[int, ...], ...]:
+        mark_seq = []
+        for i in range(1, len(prefix) + 1):
+             mark_seq.append(self.prefix_marking(prefix[:i]))
+        return tuple(mark_seq)
 
     @staticmethod
     def _create_event_log(traces: Iterable[Sequence[str]]) -> EventLog:
