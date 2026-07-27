@@ -11,6 +11,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from ..data.preparation import PrefixBatch
+from .models import symbolic_input
 from .logic import (
     forbidden_probability_mass,
     last_token_ids,
@@ -72,7 +73,7 @@ def evaluate_model(
 
     for raw_batch in data_loader:
         batch: PrefixBatch = raw_batch.to(device)
-        logits = model(batch.tokens, batch.lengths, batch.markings)
+        logits = model(batch.tokens, batch.lengths, symbolic_input(model, batch))
         batch_size = batch.targets.size(0)
         total_loss += criterion(logits, batch.targets).item()
 

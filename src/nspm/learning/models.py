@@ -16,7 +16,8 @@ from ..data.preparation import ActivityVocabulary
 from ..process.petrinet import AdjacencyMatrix
 
 
-ModelKind = Literal["gru", "gru_marking", "gru_gnn", "lstm", "lstm_marking", "lstm_gnn", "transformer"]
+ModelKind = Literal["gru", "gru_marking", "gru_gnn", "gru_seq",
+                    "lstm", "lstm_marking", "lstm_gnn", "lstm_seq", "transformer"]
 
 
 class _NextActivityRecurrent(nn.Module):
@@ -52,7 +53,7 @@ class _NextActivityRecurrent(nn.Module):
         if self.marking_encoder is not None:
             if markings is None:
                 raise ValueError("Markings cannot be None")
-            final_hidden = torch.cat((final_hidden, self.marking_encoder(markings)), dim=1)
+            final_hidden = torch.cat((final_hidden, self.marking_encoder(markings, lengths)), dim=1)
 
         return self.classifier(self.dropout(final_hidden))
 
@@ -63,11 +64,13 @@ class FlatMarkingEncoder(nn.Module):
     :class:`HeteroGraphEncoder` so the two are interchangeable.
     """
 
+    expects_sequences = False
+
     def __init__(self, marking_dim: int) -> None:
         super().__init__()
         self.output_dim: int = marking_dim
 
-    def forward(self, markings: torch.Tensor) -> torch.Tensor:
+    def forward(self, markings: torch.Tensor, lengths: torch.Tensor | None = None) -> torch.Tensor:
         return markings.float()
 
 
@@ -76,10 +79,16 @@ class HeteroGraphEncoder(nn.Module):
     Two-hop message passing on the bipartite place/transition graph.
     Heterogeneous: the place->transition and transition->place relations
     have separate weights. Readout: max over places.
+
+    Ablation rung 3 ("structure without time"): consumes one marking per
+    prefix, ``(B, P)``. The readout indexes the place axis from the right
+    so the same code also serves the sequential subclass, whose markings
+    carry an extra time axis.
     """
 
     a_pt_t: torch.Tensor
     a_tp_t: torch.Tensor
+    expects_sequences = False
 
     def __init__(self, a_pt: AdjacencyMatrix, a_tp: AdjacencyMatrix, hidden_dim: int) -> None:
         super().__init__()
@@ -92,13 +101,31 @@ class HeteroGraphEncoder(nn.Module):
         self.transition_to_place = nn.Linear(hidden_dim, hidden_dim)
         self.output_dim: int = hidden_dim
 
-    def forward(self, markings: torch.Tensor) -> torch.Tensor:
+    def forward(self, markings: torch.Tensor, lengths: torch.Tensor | None = None) -> torch.Tensor:
         place_states = self.place_input(markings.float().unsqueeze(-1)).relu()
         transition_states = matmul(self.a_pt_t, place_states)
         transition_states = self.place_to_transition(transition_states).relu()
         place_states = matmul(self.a_tp_t, transition_states)
         place_states = self.transition_to_place(place_states).relu()
-        return place_states.max(dim=1).values
+        return place_states.max(dim=-2).values
+
+class MarkingSequenceEncoder(HeteroGraphEncoder):
+
+    expects_sequences = True
+
+    def __init__(self, a_pt: AdjacencyMatrix, a_tp: AdjacencyMatrix, hidden_dim: int) -> None:
+        super().__init__(a_pt, a_tp, hidden_dim)
+        self.recurrent = nn.GRU(input_size=hidden_dim, hidden_size=hidden_dim, batch_first=True)
+
+    def forward(self, markings: torch.Tensor, lengths: torch.Tensor | None = None) -> torch.Tensor:
+        if lengths is None:
+            raise ValueError("Marking sequences are padded, so the encoder needs the prefix \nlengths to keep padded steps out of the recurrence")
+        # One graph readout per step: (B, L, P) -> (B, L, H). Time mixes only
+        # in the recurrence below, never inside a step's message passing.
+        graph_states = super().forward(markings)
+        packed = pack_padded_sequence(graph_states, lengths.cpu(), batch_first=True, enforce_sorted=False)
+        _, hidden = self.recurrent(packed)
+        return hidden[-1]
 
 class NextActivityGRU(_NextActivityRecurrent):
     """GRU classifier used as the compact recurrent baseline."""
@@ -205,13 +232,15 @@ def build_model(
         "gru": NextActivityGRU,
         "gru_marking": NextActivityGRU,
         "gru_gnn": NextActivityGRU,
+        "gru_seq": NextActivityGRU,
         "lstm": NextActivityLSTM,
         "lstm_marking": NextActivityLSTM,
         "lstm_gnn": NextActivityLSTM,
+        "lstm_seq": NextActivityLSTM,
         "transformer": NextActivityTransformer,
     }
     kind = kind.lower()
-    if kind.endswith(("_marking", "_gnn")) and marking_dim == 0:
+    if kind.endswith(("_marking", "_gnn", "_seq")) and marking_dim == 0:
         raise ValueError("Marking models need to know the number of places the network has")
     try:
         model_type = model_types[kind]
@@ -221,11 +250,34 @@ def build_model(
     marking_encoder: nn.Module | None = None
     if kind.endswith("_marking"):
         marking_encoder = FlatMarkingEncoder(marking_dim)
-    elif kind.endswith("_gnn"):
+    elif kind.endswith(("_gnn", "_seq")):
         if adjacency is None:
             raise ValueError("GNN models need the Petri net adjacency matrices")
-        marking_encoder = HeteroGraphEncoder(adjacency[0], adjacency[1], config.hidden_dim)
+        graph_encoder = MarkingSequenceEncoder if kind.endswith("_seq") else HeteroGraphEncoder
+        marking_encoder = graph_encoder(adjacency[0], adjacency[1], config.hidden_dim)
     return model_type(vocabulary_size, number_of_classes, pad_id, config, marking_encoder)
+
+
+def symbolic_input(model: nn.Module, batch) -> torch.Tensor | None:
+    """The symbolic stream the model's encoder expects, or None if it has none.
+
+    Both streams travel in the batch, so the choice belongs to the encoder
+    that declares its need, not to the call site: a log carrying marking
+    sequences also carries the static snapshots, and picking "whichever is
+    present" would silently feed histories to the static variants.
+    """
+
+    encoder = getattr(model, "marking_encoder", None)
+    if encoder is None:
+        return None
+    if not encoder.expects_sequences:
+        return batch.markings
+    if batch.marking_sequences is None:
+        raise ValueError(
+            "This model reads marking sequences: build the log with "
+            "PrefixLog.with_marking_sequences(petrinet)"
+        )
+    return batch.marking_sequences
 
 
 # -------------------------------------------------------------------- checkpoints

@@ -24,6 +24,7 @@ from ..data.preparation import ActivityVocabulary, PAD
 from ..process.automaton import ProcessDFA, START
 from ..process.graph_encoding import FeatureSpace
 from ..process.ltl_constraints import PrecedenceConstraint, relevant_constraints
+from .models import symbolic_input
 
 
 def build_allowed_mask(
@@ -129,7 +130,7 @@ def precedence_violation_rate(
     violations = 0
     for raw_batch in data_loader:
         batch = raw_batch.to(device)
-        predictions = model(batch.tokens, batch.lengths, batch.markings).argmax(dim=1)
+        predictions = model(batch.tokens, batch.lengths, symbolic_input(model, batch)).argmax(dim=1)
         for i in range(predictions.size(0)):
             total += 1
             predicted = activities[int(predictions[i])]

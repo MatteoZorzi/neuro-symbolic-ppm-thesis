@@ -148,6 +148,7 @@ class PrefixBatch:
     lengths: torch.Tensor
     targets: torch.Tensor
     markings: torch.Tensor | None
+    marking_sequences: torch.Tensor | None
 
     def to(self, device: torch.device) -> "PrefixBatch":
         return PrefixBatch(
@@ -156,6 +157,7 @@ class PrefixBatch:
             lengths=self.lengths.to(device),
             targets=self.targets.to(device),
             markings=self.markings.to(device) if self.markings is not None else None,
+            marking_sequences=self.marking_sequences.to(device) if self.marking_sequences is not None else None,
         )
 
 def collate_prefixes(examples: Sequence[PrefixExample], pad_id: int) -> PrefixBatch:
@@ -167,6 +169,7 @@ def collate_prefixes(examples: Sequence[PrefixExample], pad_id: int) -> PrefixBa
         lengths=torch.tensor([len(sequence) for sequence in sequences], dtype=torch.long),
         targets=torch.tensor([example.target_id for example in examples], dtype=torch.long),
         markings=None if examples[0].marking is None else torch.stack([torch.tensor(example.marking, dtype=torch.float32) for example in examples]),
+        marking_sequences=None if examples[0].marking_sequence is None else pad_sequence([torch.tensor(example.marking_sequence, dtype=torch.float32) for example in examples], batch_first=True, padding_value=0.0),
     )
 
 

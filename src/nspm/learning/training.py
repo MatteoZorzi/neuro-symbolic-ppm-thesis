@@ -24,7 +24,7 @@ from ..data.preparation import ActivityVocabulary, PrefixBatch
 from ..process.petrinet import AdjacencyMatrix
 from .evaluation import EvaluationResult, evaluate_model
 from .logic import forbidden_probability_mass
-from .models import ModelKind, build_model, save_checkpoint
+from .models import ModelKind, build_model, save_checkpoint, symbolic_input
 
 
 def set_random_seed(seed: int) -> None:
@@ -126,7 +126,7 @@ def train_model(
         for raw_batch in train_loader:
             batch: PrefixBatch = raw_batch.to(device)
             optimizer.zero_grad(set_to_none=True)
-            logits = model(batch.tokens, batch.lengths, batch.markings)
+            logits = model(batch.tokens, batch.lengths, symbolic_input(model, batch))
             cross_entropy = criterion(logits, batch.targets)
             # Forbidden mass is tracked in every mode as a conformance measure.
             forbidden_mass = forbidden_probability_mass(
