@@ -24,6 +24,7 @@ __pycache__/
 src/old_code.zip
 *.zip
 docs/*.pdf
+docs/figures
 
 # DO NOT PUSH
 PPM_Book.pdf
