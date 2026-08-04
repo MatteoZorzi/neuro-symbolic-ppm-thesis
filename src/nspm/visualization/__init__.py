@@ -10,6 +10,18 @@ from .benchmark_plots import (
     plot_noise_robustness,
     summarize_benchmark,
 )
+from .architecture_plots import plot_ablation_ladder, plot_variant_architecture
+from .matrix_plots import (
+    cell_means,
+    load_matrix,
+    metric_table,
+    model_catalogue,
+    paired_deltas,
+    plot_metric_by_noise,
+    plot_paired_deltas,
+    plot_winner_reliability,
+    winners,
+)
 from .plots import (
     plot_activity_frequency,
     plot_automaton,
@@ -35,5 +47,18 @@ __all__ = [
     "plot_metric_correlation",
     "plot_data_scarcity",
     "summarize_benchmark",
+    # matrice finale (900 run)
+    "load_matrix",
+    "model_catalogue",
+    "cell_means",
+    "metric_table",
+    "paired_deltas",
+    "winners",
+    "plot_metric_by_noise",
+    "plot_paired_deltas",
+    "plot_winner_reliability",
+    # struttura dei modelli
+    "plot_ablation_ladder",
+    "plot_variant_architecture",
 ]
 

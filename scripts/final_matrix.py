@@ -20,12 +20,21 @@ Uso:
   python scripts/final_matrix.py                       # tutto (salta seq se non implementato)
   python scripts/final_matrix.py --datasets Sepsis_Case --variants baseline checker
   python scripts/final_matrix.py --noises 0.0 --archs gru
+
+Le tre varianti "checker_*" (loss del checker + encoder di marking insieme)
+chiudono la griglia 2 canali x 4 encoder; non sono nel default perche' T12 e'
+pre-registrata a cinque varianti, e vanno in un CSV separato perche'
+runs/final_matrix/results.csv e' l'artefatto a 900 righe su cui il notebook
+asserisce:
+  python scripts/final_matrix.py --datasets Sepsis_Case --archs gru --noises 0.0 \
+      --variants checker_marking checker_gnn checker_seq --out-dir channel_cross
 """
 
 import argparse
 import csv
 import random
 import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 from statistics import mean, stdev
@@ -39,7 +48,7 @@ from nspm.data.loader import read_log
 from nspm.data.preparation import TraceSplits, TraceUtils, PrefixLog, ActivityVocabulary
 from nspm.process.petrinet import PetriNet
 from nspm.process.automaton import ProcessDFA
-from nspm.learning.models import ModelKind
+from nspm.learning.models import GRAPH_SUFFIXES, ModelKind
 from nspm.learning.training import train_model, resolve_device
 from nspm.learning.logic import build_allowed_mask
 from nspm.learning.evaluation import evaluate_model
@@ -47,22 +56,40 @@ from nspm.learning.evaluation import evaluate_model
 DATASETS = ("Sepsis_Case", "BPIC_2013_incidents", "BPIC_2020_DomesticDeclarations")
 ARCHS = ("gru", "lstm")
 VARIANTS = ("baseline", "checker", "marking", "gnn", "seq")
+#: Croce dei due canali: loss del checker E encoder di marking insieme. Fuori
+#: dal default di ``--variants`` di proposito -- T12 e' pre-registrata a cinque
+#: varianti e un lancio nudo dello script deve continuare a riprodurla.
+CROSS_VARIANTS = ("checker_marking", "checker_gnn", "checker_seq")
+#: Gradino 6: la GRNN di TACO, convoluzioni dentro le gate. Fuori dal default
+#: per la stessa ragione della croce -- T12 e' pre-registrata a cinque varianti.
+STEP6_VARIANTS = ("grnn",)
+ALL_VARIANTS = VARIANTS + CROSS_VARIANTS + STEP6_VARIANTS
 NOISES = (0.0, 0.25, 0.5)
 SEEDS = tuple(range(10))
 LOGIC_WEIGHT = 0.5  # pre-registrato: lo stesso del benchmark di corruzione (exp 2)
 
 # variante -> (suffisso kind, use_logic, famiglia di dati)
+# Le due assi sono indipendenti per costruzione: il suffisso sceglie l'encoder
+# simbolico (feature), il booleano accende il termine di loss. Le varianti
+# "checker_*" sono esattamente il prodotto delle due.
 VARIANT_SPEC = {
     "baseline": ("", False, "plain"),
     "checker": ("", True, "plain"),
     "marking": ("_marking", False, "marked"),
     "gnn": ("_gnn", False, "marked"),
     "seq": ("_seq", False, "sequences"),
+    "checker_marking": ("_marking", True, "marked"),
+    "checker_gnn": ("_gnn", True, "marked"),
+    "checker_seq": ("_seq", True, "sequences"),
+    "grnn": ("_grnn", False, "sequences"),
 }
 
+# ``secs_per_epoch`` esiste per il gradino 6: la GRNN srotola il tempo a mano,
+# quindi il costo e' parte del verdetto quanto l'accuratezza. Le vecchie righe
+# non ce l'hanno e il resume legge per nome, quindi convivono.
 CSV_FIELDS = ("dataset", "arch", "variant", "noise", "seed",
               "accuracy", "macro_f1", "top3", "violation_rate", "forbidden",
-              "best_epoch", "corrupted")
+              "best_epoch", "corrupted", "secs_per_epoch")
 
 
 def find_log(dataset: str) -> Path:
@@ -129,9 +156,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--datasets", nargs="+", default=list(DATASETS), choices=DATASETS)
     parser.add_argument("--archs", nargs="+", default=list(ARCHS), choices=ARCHS)
-    parser.add_argument("--variants", nargs="+", default=list(VARIANTS), choices=VARIANTS)
+    parser.add_argument("--variants", nargs="+", default=list(VARIANTS), choices=ALL_VARIANTS)
     parser.add_argument("--noises", nargs="+", type=float, default=list(NOISES))
     parser.add_argument("--seeds", nargs="+", type=int, default=list(SEEDS))
+    parser.add_argument(
+        "--out-dir", default="final_matrix",
+        help="sottocartella di runs/ per CSV e checkpoint. Gli esperimenti fuori "
+             "da T12 (es. le varianti checker_*) vanno in una cartella propria: "
+             "runs/final_matrix/results.csv e' pre-registrato a 900 righe e il "
+             "notebook dei risultati ci asserisce sopra.",
+    )
     args = parser.parse_args()
 
     # gate: seq resta fuori finche' i kind non esistono in models.py
@@ -141,7 +175,7 @@ def main() -> None:
               "Rilancia lo script identico quando esiste: fara' solo le celle mancanti.")
         variants.remove("seq")
 
-    out_dir = ROOT / "runs" / "final_matrix"
+    out_dir = ROOT / "runs" / args.out_dir
     (out_dir / "ckpt").mkdir(parents=True, exist_ok=True)
     results_csv = out_dir / "results.csv"
 
@@ -165,7 +199,8 @@ def main() -> None:
     total = len(args.datasets) * len(args.archs) * len(variants) * len(args.noises) * len(args.seeds)
     print(f"matrice: {len(args.datasets)} dataset x {len(args.archs)} arch x "
           f"{len(variants)} varianti x {len(args.noises)} noise x {len(args.seeds)} seed "
-          f"= {total} run ({len(done)} gia' fatte)", flush=True)
+          f"= {total} run ({len(done)} celle gia' nel CSV)", flush=True)
+    completed = 0  # solo le celle girate in QUESTO lancio, per la progress bar
 
     for dataset in args.datasets:
         pending = [c for c in (
@@ -197,6 +232,7 @@ def main() -> None:
                         train_log, corrupted = art["train_logs"][family].corrupt_targets(noise, rng)
                         train_loader = train_log.data_loader(base_config.data.batch_size, shuffle=True)
 
+                        started = time.perf_counter()
                         train_res = train_model(
                             model_kind=kind,
                             vocabulary=vocab,
@@ -207,8 +243,11 @@ def main() -> None:
                             checkpoint_path=out_dir / "ckpt" / f"{dataset}_{kind}_{variant}_n{int(noise*100)}_s{seed}.pt",
                             use_logic=use_logic,
                             marking_dim=n_places if family != "plain" else 0,
-                            adjacency=petrinet.adjacency_matrices if variant in ("gnn", "seq") else None,
+                            adjacency=petrinet.adjacency_matrices if suffix in GRAPH_SUFFIXES else None,
                         )
+                        # Le epoche girate, non quelle configurate: l'early
+                        # stopping ferma le varianti a lunghezze diverse.
+                        secs_per_epoch = (time.perf_counter() - started) / max(len(train_res.history), 1)
                         eval_res = evaluate_model(
                             model=train_res.model,
                             data_loader=art["eval_loaders"]["test"][family],
@@ -221,12 +260,13 @@ def main() -> None:
                                 f"{eval_res.accuracy:.6f}", f"{eval_res.macro_f1:.6f}",
                                 f"{eval_res.top_k_accuracy:.6f}", f"{eval_res.violation_rate:.6f}",
                                 f"{eval_res.forbidden_mass:.6f}",
-                                train_res.best_epoch, corrupted,
+                                train_res.best_epoch, corrupted, f"{secs_per_epoch:.2f}",
                             ])
                         done.add(cell)
-                        print(f"[{dataset} | {arch} {variant:<8} | noise {noise:.2f} | seed {seed}] "
+                        completed += 1
+                        print(f"[{dataset} | {arch} {variant:<15} | noise {noise:.2f} | seed {seed}] "
                               f"acc {eval_res.accuracy:.4f} forbidden {eval_res.forbidden_mass:.4f} "
-                              f"({len(done)}/{total})", flush=True)
+                              f"({completed}/{total})", flush=True)
 
     # ---- riepilogo dal CSV completo (incluse run di lanci precedenti) -------
     with results_csv.open() as handle:
