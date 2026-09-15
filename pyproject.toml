@@ -35,16 +35,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.5"]
-# Notebook execution and PDF export for the experiment notebooks.
-notebooks = ["nbclient>=0.9", "nbformat>=5.9", "nbconvert>=7.0"]
 
-[project.scripts]
-# Console entry point: `nspm experiment ...` once installed.
-nspm = "src.nspm.__main__:main"
+# There is no console entry point. The package is a library: the experiment is
+# run through `official_experiments/scripts/noise_curve.py`, which drives
+# `matrix.py`, and the tables and figures are the other scripts beside them.
 
 [tool.setuptools.packages.find]
-# Import path `src.nspm` so notebooks, the READMEs and `python -m src.nspm`
-# all work after `pip install -e .`.
+# Import path `src.nspm`, which is what every script inserts on sys.path.
 where = ["."]
 include = ["src*"]
 

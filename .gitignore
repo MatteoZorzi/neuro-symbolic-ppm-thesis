@@ -26,6 +26,7 @@ src/old_code.zip
 docs/*.pdf
 docs/figures
 docs/*.md
+docs/Thesis
 
 # DO NOT PUSH
 PPM_Book.pdf

@@ -1,93 +1,131 @@
-# Neuro-Symbolic Predictive Process Monitoring with Procedural Background Knowledge
+# Benchmarking Neuro-Symbolic Predictive Process Monitoring
 
-Master's thesis project. It studies how **procedural background knowledge**
-(temporal-logic constraints over process activities) can be injected into deep
-sequential models for **predictive process monitoring**, using the
-neuro-symbolic *logic loss* of T-LEAF as the regularisation mechanism.
+Master's thesis project. It benchmarks ways of injecting **procedural background
+knowledge** — a Petri net discovered from an event log — into a recurrent
+**predictive process monitoring** model, and asks which channel carries the
+effect and what each one costs.
 
-The case study is the **Sepsis Cases** event log: a next-activity prediction
-task where GRU / LSTM / Transformer models are trained both as plain baselines
-and with two differentiable logic penalties.
-
-> This repository builds on the T-LEAF method by Xie, Zhou & Soh. The original
-> code (synthetic, action-recognition and imitation-learning experiments) has
-> been removed; this project keeps and extends only the process-monitoring
-> branch. See [Credits & citation](#credits--citation).
+The reference work being benchmarked is Axel Mezini's *Neuro-Symbolic Predictive
+Process Monitoring* (MSc thesis, 2024/25; supervisors Maggi and Donadello) and
+the article derived from it. Its two logic losses are reimplemented here in
+`src/nspm/learning/axel_losses.py` and are **his contribution, not ours**.
 
 ## What it does
 
-For each prefix of a process trace the model predicts the next activity. Two
-neuro-symbolic regularisers steer it towards process-conformant predictions:
+Eight models share one recurrent trunk, one training procedure and **one
+discovered Petri net**, and differ only in how that net reaches them. Holding the
+knowledge fixed while varying the channel is what makes the comparison a
+statement about mechanisms rather than about process models.
 
-- **checker** — penalises the probability mass the model assigns to next
-  activities forbidden by the empirical directly-follows automaton learned from
-  the training log.
-- **embedder** — the actual T-LEAF logic loss `||q(A) - q(w_pred)||^2`: the
-  squared distance, in a learned graph-embedding space, between a relevant LTLf
-  constraint's DFA and the model's predicted continuation. Mined LTLf
-  *precedence* constraints supply the procedural background knowledge.
+| variant | channel | how the knowledge enters | whose |
+|---|---|---|---|
+| `baseline` | — | it does not | — |
+| `checker_net` | loss | reachability automaton, projected onto activity pairs | ours |
+| `checker_net_state` | loss | the same automaton, indexed by state | ours |
+| `lll` | loss | rejected mass as `−log(1−r)`, plus gated cross-entropy | **Mezini** |
+| `gll` | loss | acceptance of a differentiable Gumbel-Softmax rollout | **Mezini** |
+| `marking` | feature | the flat marking from token replay | ours |
+| `gnn` | feature | the marking over the net's bipartite graph | ours |
+| `seq` | feature | the sequence of markings, read recurrently | ours |
 
-No `spot` / `ltlf2dfa` dependency: the (small) constraint automata are built
-directly, so the pipeline runs on native Windows.
+Each model is measured on next-activity prediction **and** on suffix generation,
+on four event logs, at nine noise levels from a clean log to 80% corrupted, under
+two protocols that differ only in whether the knowledge is mined from the test
+partition or from the training one.
 
-## Environment
-
-```bash
-conda env create -f environment_windows.yml
-conda activate tleaf
-```
-
-## Usage
-
-Run all commands from the repository root (the package is imported as
-`src.nspm`).
-
-Descriptive process analysis on the XES log:
-
-```bash
-python -m src.nspm analyze
-```
-
-Train baselines and logic-aware variants (checker branch) and compare them:
-
-```bash
-python -m src.nspm experiment --model both
-```
-
-The learned-embedder branch (full T-LEAF logic loss) is driven from the
-notebook / Python API; see `src/nspm/README.md`.
-
-Place the event log at `./datasets/Sepsis_Case/Sepsis_Cases_Event_Log.xes`;
-results, tables and plots are written under `./datasets/Sepsis_Case/` and
-`./runs/` (both git-ignored).
+Headline result: both logic losses reduce forbidden probability mass in every
+cell of both grids, the feature channel does not move it at all, and the cheapest
+method is the most effective one.
 
 ## Repository layout
 
 ```text
-src/nspm/      neuro-symbolic predictive-monitoring pipeline (the project)
-  data/               XES parsing, traces, splits, prefix datasets
-  process/            empirical DFA + LTLf constraints + graph encoding
-  learning/           GRU/LSTM/Transformer, logic losses, embedder, training
-  visualization/      EDA, DFA and model-comparison plots
-  pipeline/           analysis and experiment orchestration
-notebooks/            end-to-end and modular T-LEAF notebooks
-docs/                 ARCHITECTURE.md (reading map) and review notes
+official_experiments/   the results of the thesis and the code that produced them
+  protocol-test/        one grid per log, knowledge mined from the test split
+  protocol-train/       the same, knowledge mined from the training split
+  all_grids.csv         the eight grids concatenated: what every script reads
+  figures/              the figures the thesis includes
+  scripts/              matrix.py and noise_curve.py (the experiment), plus one
+                        script per table and one per figure
+  run_slurm.sh          the cluster job that produced the grids
+src/nspm/               the library the experiment is built from
+  data/                 XES parsing, splits, prefix logs, noise injection
+  process/              Petri net + token replay, reachability automaton,
+                        directly-follows automaton, precedence constraints
+  learning/             recurrent models, logic losses, training, evaluation,
+                        suffix generation
+scripts/                the probes that led to the design, and the checks on the
+                        symbolic layer
+datasets/               the four event logs
 ```
 
-## Documentation
+`official_experiments/README.md` explains the results directory and lists every
+command that regenerates a table or a figure. `src/nspm/README.md` is the reading
+order of the library.
 
-- `docs/ARCHITECTURE.md` — module dependency graph and recommended reading order.
-- `src/nspm/README.md` — detailed package documentation and data flow.
-- `docs/CODE_REVIEW_NOTES.md` — design/cleanup notes.
+## Environment
+
+```bash
+conda env create -f environment.yml
+conda activate tleaf
+```
+
+The system Python will not do: `pandas` and `pm4py` are pinned in this
+environment (`numpy>=1.26,<2`).
+
+The runs themselves were executed on the university HPC cluster, not on a
+workstation. `environment.yml` describes the local environment and does **not**
+match the one that produced the numbers; the versions stated in §5.2.4 of the
+thesis are the authoritative ones.
+
+## Usage
+
+Run all commands from the repository root.
+
+Regenerate every table and figure of the thesis:
+
+```bash
+python official_experiments/scripts/summary_table.py
+python official_experiments/scripts/metric_figures.py --metric forbidden_net --paired
+```
+
+The full list is in `official_experiments/README.md`.
+
+Run a noise curve (one protocol, one log, nine noise levels):
+
+```bash
+python official_experiments/scripts/noise_curve.py --protocol B --dataset Sepsis_Case
+```
+
+Training writes under `runs/`, which is git-ignored, and resumes: a cell already
+in the CSV is skipped, so a grid can be run in slices.
+
+Check that the symbolic layer does what it claims:
+
+```bash
+python scripts/verify_symbolic.py
+```
 
 ## Credits & citation
 
-This work builds directly on **T-LEAF**:
+The two logic losses, local and global, are the work of **Axel Mezini**:
+
+> Axel Mezini. *Neuro-Symbolic Predictive Process Monitoring.* MSc thesis, Free
+> University of Bozen-Bolzano, 2024/25. Repositories:
+> <https://github.com/axelmezini/suffix-prediction> (global) and
+> <https://github.com/axelmezini/nesy-suffix-prediction-dfa> (local).
+
+They are reimplemented here against a different symbolic object so that every
+variant reads the same knowledge; the structure of both penalties is his.
+
+The project began from **T-LEAF**, whose logic-loss formulation and graph
+encoding shaped its early design:
 
 > Yaqi Xie, Fan Zhou, Harold Soh. *Embedding Symbolic Temporal Knowledge into
 > Deep Sequential Models.* arXiv:2101.11981 (NUS).
+> <https://github.com/clear-nus/T-LEAF>
 
-Original implementation: <https://github.com/clear-nus/T-LEAF>. The logic-loss
-formulation, hierarchical embedder and graph-encoding ideas are theirs; this
-repository adapts them to predictive process monitoring on the Sepsis log and
-adds the LTLf-precedence procedural background knowledge.
+The feature channel follows Theis and Darabi (decay replay) and TACO
+(Rama-Maneiro, Vidal and Lama). The PPM protocol conventions come from Di
+Francescomarino, Donadello and Maggi, *Predictive Process Monitoring* (Springer,
+2026).

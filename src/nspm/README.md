@@ -1,196 +1,101 @@
-# nspm — neuro-symbolic PPM pipeline
+# nspm — the library the benchmark is built from
 
-This package turns an XES event log into a reproducible next-activity prediction
-experiment. It replaces the old notebook-only implementation with small modules
-that can be tested, imported and reused. The Sepsis Cases log is the default
-example; other logs under `datasets/` (e.g. BPIC_2013_incidents,
-BPIC_2020_DomesticDeclarations) work via `--dataset-name`.
+This package turns an XES event log into a next-activity and suffix-prediction
+experiment. It is a library and has no command line: the experiment lives beside
+the results it produced, in `official_experiments/scripts/`, where `matrix.py` is
+the worked example of how these pieces fit together.
 
-## Data flow
+## Reading order
 
 1. `data/loader.py` parses the XES (or CSV) file into one row per event.
-2. `pipeline/analysis.py` builds case, activity, variant and transition tables.
-3. `data/preparation.py` splits cases and creates one example per trace prefix
-   (`TraceSplits`, `ActivityVocabulary`, `PrefixLog` — including label
-   corruption for the robustness study).
-4. `process/automaton.py` learns a DFA from the training partition only.
-5. `learning/models.py` provides GRU, LSTM and causal Transformer models.
-6. `learning/logic.py` provides both logic losses (checker and embedder).
-7. `learning/training.py` trains and restores the best validation checkpoint.
-8. `pipeline/experiment.py` runs and compares baseline and logic-aware models.
+2. `data/preparation.py` splits the cases and creates one example per trace
+   prefix: `TraceSplits`, `ActivityVocabulary`, `PrefixLog`, and the two noise
+   models — on the events or on the targets.
+3. `process/petrinet.py` discovers a Petri net with the pm4py inductive miner,
+   computes the per-prefix markings by token replay, and exposes the bipartite
+   place/transition adjacency matrices.
+4. `process/reachability.py` turns that same net into a deterministic automaton
+   by traversing every reachable marking.
+5. `process/automaton.py` learns the directly-follows automaton from the traces,
+   which is the empirical yardstick every variant is evaluated against.
+6. `learning/models.py` provides the GRU and LSTM trunks and the three marking
+   encoders.
+7. `learning/logic.py` and `learning/axel_losses.py` provide the logic losses.
+8. `learning/training.py` trains and restores the best validation checkpoint.
+9. `learning/trace_prediction.py` generates the suffix and scores it.
 
-The learned-embedder branch of T-LEAF adds:
-
-- `process/ltl_constraints.py` mines LTLf precedence constraints from the
-  training traces and builds a DFA (with propositional edge guards) per rule.
-- `process/graph_encoding.py` encodes those DFAs and traces as graphs, with the
-  paper's edge-to-node lifting, and a differentiable soft feature for the
-  predicted step.
-- `learning/embedder.py` is the hierarchical embedder (`qe` edge embedder +
-  `qm` meta embedder with random-walk aggregation).
-- `learning/embedder_training.py` trains it with the triplet hinge loss.
-- `learning/logic.py` (`EmbeddingLogicLoss`) is the T-LEAF logic loss
-  `||q(A) - q(w_pred)||^2`, differentiable w.r.t. the task model.
-
-The marking branch (Petri net; Steps 0-2 done, Step 3 — marking sequences —
-next) adds:
-
-- `process/petrinet.py` discovers a Petri net from the training traces
-  (pm4py inductive miner), computes per-prefix markings via token replay and
-  exposes the bipartite place/transition adjacency matrices.
-- `PrefixLog.with_markings` attaches each prefix's marking to its examples;
-  the recurrent models take an injected `marking_encoder` (contract:
-  `forward(markings) -> (B, output_dim)`): `FlatMarkingEncoder` (identity,
-  kinds `gru_marking`/`lstm_marking`) or `HeteroGraphEncoder` (hand-rolled
-  two-hop message passing over the bipartite graph, kinds
-  `gru_gnn`/`lstm_gnn`). `build_model` picks the encoder from the kind;
-  checkpoints carry the adjacency matrices.
-- Ablation kill test (`scripts/step1_marking_kill_test.py`, 5 seeds): the
-  flat marking concat does not move accuracy (noise) but lowers forbidden
-  mass in 5/5 seeds; the static hetero GNN does not move accuracy either
-  (−0.20 ± 0.33 pt vs flat) — consistent with loop overwriting on the final
-  snapshot. Step 3 (TACO-style): per-event marking sequences processed
-  recurrently.
-
-## Package structure
+The split is performed by case, never by event or prefix: prefixes belonging to
+one case cannot appear in two partitions.
 
 ```text
 nspm/
-|-- data/             XES/CSV parsing, traces, splits and prefix datasets
-|-- process/          empirical DFA and process-conformance rules
-|-- learning/         GRU/LSTM, logic loss, training and evaluation
-|-- visualization/    EDA, DFA and comparison plots
-|-- pipeline/         high-level analysis and experiment orchestration
-|-- config.py         typed experiment configuration
-`-- __main__.py       command-line interface
+|-- data/       XES/CSV parsing, traces, splits and prefix datasets
+|-- process/    Petri net, reachability automaton, empirical DFA, constraints
+|-- learning/   GRU/LSTM, marking encoders, logic losses, training, evaluation
+`-- config.py   typed experiment configuration
 ```
 
-The split is performed by case, never by event or prefix. Consequently, prefixes
-belonging to one patient cannot appear in multiple partitions.
+## The two channels
 
-## Models
+The whole benchmark is one net reaching the model in different ways.
 
-Both recurrent architectures have the same public interface:
+**As a feature.** `PrefixLog.with_markings` attaches each prefix's marking to its
+examples, and the recurrent models take an injected `marking_encoder` whose
+contract is `forward(markings) -> (B, output_dim)`. `FlatMarkingEncoder` passes
+the raw vector through (`*_marking`); `HeteroGraphEncoder` does two-hop message
+passing over the bipartite graph (`*_gnn`); `MarkingSequenceEncoder` reads the
+whole sequence of markings recurrently (`*_seq`). `build_model` picks the encoder
+from the kind, and checkpoints carry the adjacency matrices.
 
-```python
-logits = model(tokens, lengths)
-```
+**As a loss.** `to_process_dfa()` projects the reachability automaton onto
+directly-follows form, so the last-token `build_allowed_mask` accepts it
+(`checker_net`). Or `logic.build_state_mask` keeps one row per automaton state
+and `PrefixLog.with_automaton_states` supplies the per-prefix state, so the net's
+memory survives into the loss (`checker_net_state`). The projection is not free:
+on Sepsis it discards 31.9% of the decisions where the stateful automaton forbids
+and the directly-follows view does not.
 
-`NextActivityGRU` is compact and fast. `NextActivityLSTM` adds an explicit cell
-state and can retain longer dependencies, at the cost of more parameters.
-`NextActivityTransformer` uses causal self-attention, sinusoidal positional
-encoding and the final real prefix token for classification.
+Neither loss variant changes the network: the automaton state is not a model
+input, it only selects a row of the constraint mask. Every variant is evaluated
+against the same empirical DFA, so the conformance columns stay comparable across
+rows.
 
-For an equal task/logic objective, run:
+## The objectives
 
 ```text
-python -m src.nspm experiment --model transformer \
-  --task-loss-weight 0.5 --logic-weight 0.5
+checker        cross_entropy + logic_weight * forbidden_probability_mass
+LLL            alpha * weighted_cross_entropy + (1 - alpha) * -log(1 - mass)
+GLL            alpha * cross_entropy          + (1 - alpha) * -log(acceptance)
 ```
 
-This computes exactly `0.5 * cross_entropy + 0.5 * forbidden_mass` for the
-logic-aware Transformer. The baseline is trained alongside it only as an
-architecture-matched experimental control.
+The automaton is never used to overwrite predictions. It supplies a
+differentiable training signal, which is what lets predictive accuracy and
+conformance be measured independently.
 
-The logic-aware objective is:
+The two in `learning/axel_losses.py` are the work of Mezini et al.; unlike the
+checker they replace the loss rather than adding a weighted term, because both
+blend task and logic through their own `alpha`. `weighted_cross_entropy` drops
+the examples whose ground-truth target is itself rejected by the automaton: under
+label noise those targets are corrupted, so the objective stops teaching
+recognisable mistakes. GLL instead rolls the model forward with Gumbel-Softmax
+and scores the whole generated trace against a tensorised copy of the automaton.
 
-```text
-cross_entropy + logic_weight * forbidden_probability_mass
-```
+## Also here, and out of the thesis
 
-The DFA is not used to overwrite predictions. It supplies a differentiable
-training signal, allowing predictive accuracy and conformance to be measured
-independently.
+Code kept because it was part of the work, not because the benchmark uses it:
+the T-LEAF embedder (`learning/embedder.py`, `learning/embedder_training.py`,
+`process/graph_encoding.py`, and `EmbeddingLogicLoss` in `learning/logic.py`),
+and the graph-recurrent encoder in `learning/models.py`.
 
-## Commands
-
-From the repository root:
-
-```powershell
-python -m src.nspm analyze
-python -m src.nspm experiment --model both --epochs 12
-python -m src.nspm experiment --model lstm --device cpu --max-cases 200
-python -m src.nspm experiment --model transformer --task-loss-weight 0.5 --logic-weight 0.5
-python -m src.nspm experiment --model both --logic-weights 0.05 0.1 0.25 0.5 1.0
-```
-
-The executed modular notebook is available at:
-
-```text
-notebooks/old/Sepsis_Case_Modular_TLEAF.ipynb
-```
-
-The experiment writes:
-
-- `dataset_summary.json`, split sizes and DFA coverage;
-- `dfa.json` and `vocabulary.json`, preprocessing metadata;
-- one history CSV and checkpoint for every model variant;
-- `test_results.csv` and `test_results.json`;
-- EDA, DFA, learning-curve and final-comparison figures.
-
-## Run directories
-
-Experiment outputs are not written under `datasets/`. The CLI scans `runs/` and
-creates the next available directory automatically:
-
-```text
-runs/
-|-- Sepsis_Case_run_1/
-|   |-- models/
-|   |-- test_results.csv
-|   |-- validation_logic_weight_search.csv
-|   `-- JSON, CSV and PNG artifacts
-`-- Sepsis_Case_run_2/
-```
-
-Use `--runs-dir` for another root or `--dataset-name` for another prefix.
-Providing `--output-dir` explicitly disables automatic numbering.
-
-## Main API
-
-```python
-from pathlib import Path
-from src.nspm import ExperimentConfig, run_experiment
-from src.nspm.pipeline import create_next_run
-
-paths = create_next_run(Path("runs"), "Sepsis_Case")
-run = run_experiment(
-    input_path=Path("datasets/Sepsis_Case/Sepsis_Cases_Event_Log.xes"),
-    output_dir=paths.root,
-    model_dir=paths.models,
-    config=ExperimentConfig(),
-    model_kinds=("gru", "lstm"),
-)
-print(run.results)
-```
-
-Keep `logic_weight` as a hyperparameter selected on validation data. A lower
-forbidden mass is useful only when it does not hide a material loss in predictive
-quality.
-
-When `--logic-weights` is used, the pipeline selects the lowest validation
-forbidden mass among candidates whose validation accuracy is no more than one
-percentage point below the corresponding baseline. The test set is evaluated
-only after that choice. Adjust the constraint with
-`--max-validation-accuracy-drop`.
+## Determinism
 
 PyTorch deterministic algorithms are enabled during training, so repeated runs
-with the same environment, seed and device use reproducible kernels.
+with the same environment, seed and device use reproducible kernels. Training
+uses validation-loss early stopping: five epochs of patience, a minimum
+improvement of `1e-4`, and at least five completed epochs.
 
-Training also uses validation-loss early stopping. Defaults are five epochs of
-patience, a minimum improvement of `1e-4`, and at least five completed epochs.
-They can be changed with `--early-stopping-patience`,
-`--early-stopping-min-delta`, and `--early-stopping-min-epochs`.
-
-## Relation to the original T-LEAF workflow
-
-The original Action Recognition experiment performs preprocessing, builds a
-logical automaton representation, trains a baseline target model, trains
-checker-loss and embedder-loss variants, and compares their results. The Sepsis
-pipeline preserves preprocessing, DFA construction, target-model training,
-checker-style differentiable logic loss, evaluation and visualization.
-
-The XES dataset does not include external LTL formulas or an edge/meta-embedder
-training corpus. Therefore its process model is an empirical training-only DFA,
-and the logic-aware model corresponds to the original checker-loss branch. It
-must not be described as a reproduction of the original learned embedder loss.
+The Petri net is the one thing that is **not** reproducible across processes:
+pm4py generates fresh names for places and transitions at every call, and the
+marking vectors depend on their order. `process/artifact_store.py` exists for
+that reason — it saves the mined objects and recalls them identical, keyed by the
+fingerprint of the traces they were mined from.
