@@ -23,7 +23,7 @@ from ..config import ExperimentConfig
 from ..data.preparation import ActivityVocabulary, PrefixBatch
 from ..process.petrinet import AdjacencyMatrix
 from .evaluation import EvaluationResult, evaluate_model
-from .logic import forbidden_probability_mass
+from .logic import forbidden_probability_mass, last_token_ids
 from .models import ModelKind, build_model, save_checkpoint, symbolic_input
 
 
@@ -71,6 +71,8 @@ def train_model(
     use_logic: bool,
     logic_mode: str = "checker",
     embedding_logic=None,
+    logic_mask: torch.Tensor | None = None,
+    axel_loss=None,
     epoch_callback: Callable[[dict[str, float]], None] | None = None,
     marking_dim: int = 0,
     adjacency: tuple[AdjacencyMatrix, AdjacencyMatrix] | None = None,
@@ -78,16 +80,38 @@ def train_model(
     """Train one model and restore the epoch with best validation loss.
 
     ``logic_mode`` selects which differentiable penalty the ``logic_weight``
-    multiplies when ``use_logic`` is set: ``"checker"`` uses the empirical-DFA
-    forbidden-probability mass, ``"embedder"`` uses the learned T-LEAF embedding
-    distance supplied via ``embedding_logic``. Forbidden mass is always recorded
+    multiplies when ``use_logic`` is set:
+
+    ``"checker"``
+        forbidden-probability mass under ``allowed_mask``, indexed by the last
+        input token -- the directly-follows view;
+    ``"checker_state"``
+        the same penalty under ``logic_mask``, indexed by the
+        reachability-automaton state each prefix reaches (carried on the batch
+        as ``automaton_states``). This is the only mode in which a Petri net
+        enters the loss *with its memory* instead of projected onto
+        directly-follows pairs;
+    ``"embedder"``
+        the learned T-LEAF embedding distance supplied via ``embedding_logic``.
+
+    Forbidden mass under ``allowed_mask`` is always recorded, whatever the mode,
     so process conformance stays comparable across modes.
     """
 
-    if logic_mode not in {"checker", "embedder"}:
-        raise ValueError("logic_mode must be 'checker' or 'embedder'.")
+    if logic_mode not in {"checker", "checker_state", "embedder",
+                          "axel_local", "axel_global"}:
+        raise ValueError(
+            "logic_mode must be 'checker', 'checker_state', 'embedder', "
+            "'axel_local' or 'axel_global'."
+        )
     if use_logic and logic_mode == "embedder" and embedding_logic is None:
         raise ValueError("logic_mode='embedder' requires an embedding_logic loss.")
+    if use_logic and logic_mode == "checker_state" and logic_mask is None:
+        raise ValueError(
+            "logic_mode='checker_state' requires a logic_mask from build_state_mask."
+        )
+    if use_logic and logic_mode.startswith("axel") and axel_loss is None:
+        raise ValueError(f"logic_mode={logic_mode!r} requires an axel_loss.")
 
     set_random_seed(config.seed)
     device = resolve_device(config.training.device)
@@ -101,6 +125,13 @@ def train_model(
         adjacency=adjacency,
     ).to(device)
     allowed_mask = allowed_mask.to(device)
+    if logic_mask is not None:
+        logic_mask = logic_mask.to(device)
+    if axel_loss is not None:
+        # Le loss di Axel sono nn.Module e portano dentro dei tensori (la
+        # maschera per la locale, le matrici dell'automa per la globale): vanno
+        # sul device come il modello, altrimenti l'indicizzazione le trova a CPU.
+        axel_loss = axel_loss.to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(
         model.parameters(),
@@ -134,11 +165,48 @@ def train_model(
             )
             if use_logic and logic_mode == "embedder":
                 logic_penalty = embedding_logic(logits, batch.tokens, batch.lengths)
-            else:
+            elif use_logic and logic_mode == "checker_state":
+                if batch.automaton_states is None:
+                    raise ValueError(
+                        "logic_mode='checker_state' needs batches carrying "
+                        "automaton_states: build the log with "
+                        "PrefixLog.with_automaton_states(automaton)."
+                    )
+                logic_penalty = forbidden_probability_mass(
+                    logits, batch.tokens, batch.lengths, logic_mask,
+                    state_ids=batch.automaton_states,
+                )
+            elif use_logic and logic_mode.startswith("axel"):
+                logic_penalty = None  # assegnata sotto: le due loss di Axel
+            else:                     # non sono un termine da moltiplicare,
+                logic_penalty = forbidden_mass   # miscelano loro stesse con alpha
+
+            if use_logic and logic_mode == "axel_local":
+                # La LLL contiene gia' la propria cross-entropy, pesata per
+                # scartare i target che l'automa rifiuta: sostituisce l'intera
+                # loss invece di aggiungersi a quella del task.
+                loss = axel_loss(logits, batch.targets,
+                                 last_token_ids(batch.tokens, batch.lengths))
                 logic_penalty = forbidden_mass
-            loss = config.training.task_loss_weight * cross_entropy
-            if use_logic:
-                loss = loss + config.training.logic_weight * logic_penalty
+            elif use_logic and logic_mode == "axel_global":
+                # La GLL torna la sola penalita' logica; la miscela con la
+                # supervisione avviene qui, come nel runner di Axel.
+                # Token -> stato dell'automa tensoriale. I token sono
+                # ``(PAD, START, *attivita')`` e gli stati
+                # ``(START, *attivita', END, trap)``: entrambi tengono le
+                # attivita' nello stesso ordine, quindi la conversione e' uno
+                # scorrimento di uno, e manda START (token 1) sullo stato 0.
+                global_penalty = axel_loss(
+                    model, batch.tokens, batch.lengths,
+                    last_token_ids(batch.tokens, batch.lengths) - 1,
+                )
+                loss = (axel_loss.alpha * cross_entropy
+                        + (1.0 - axel_loss.alpha) * global_penalty)
+                logic_penalty = global_penalty
+            else:
+                loss = config.training.task_loss_weight * cross_entropy
+                if use_logic:
+                    loss = loss + config.training.logic_weight * logic_penalty
             loss.backward()
             nn.utils.clip_grad_norm_(
                 model.parameters(), config.training.gradient_clip

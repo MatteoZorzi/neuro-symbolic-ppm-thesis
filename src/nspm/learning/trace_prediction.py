@@ -92,6 +92,44 @@ def dl_similarity(a: Sequence[str], b: Sequence[str]) -> float:
     return 1.0 - damerau_levenshtein_distance(a, b) / longest
 
 
+class _MarkingRollout:
+    """Keeps the symbolic marking channel in step with an autoregressive rollout.
+
+    The marking variants read a Petri-net state alongside the token prefix, so
+    free-running generation has to *replay its own predictions* through the net:
+    at training time the marking comes from the ground-truth prefix, at
+    generation time it can only come from what the model just produced.
+
+    The replay convention is the one :meth:`PrefixLog.with_marking_sequences`
+    uses -- ``(initial, m_1, ..., m_k)`` for a k-event prefix, one entry per
+    token including ``START`` -- so an encoder sees the same shapes it was
+    trained on. Markings are appended one per generated step instead of
+    recomputing the whole chain, keeping the rollout O(L^2) rather than O(L^3).
+    """
+
+    def __init__(self, petrinet, expects_sequences: bool) -> None:
+        self._petrinet = petrinet
+        self._expects_sequences = expects_sequences
+        self._activities: list[str] = []
+        self._markings: list[tuple[int, ...]] = []
+
+    def reset(self, prefix_activities: Sequence[str]) -> None:
+        self._activities = list(prefix_activities)
+        self._markings = [
+            self._petrinet.prefix_marking(()),
+            *self._petrinet.marking_sequence(self._activities),
+        ]
+
+    def push(self, activity: str) -> None:
+        self._activities.append(activity)
+        self._markings.append(self._petrinet.prefix_marking(self._activities))
+
+    def tensor(self, device: torch.device) -> torch.Tensor:
+        if self._expects_sequences:  # (1, L, P), L aligned with the token count
+            return torch.tensor([self._markings], dtype=torch.float32, device=device)
+        return torch.tensor([self._markings[-1]], dtype=torch.float32, device=device)
+
+
 @torch.no_grad()
 def generate_continuation(
     model: nn.Module,
@@ -100,6 +138,7 @@ def generate_continuation(
     n_steps: int,
     device: torch.device,
     allowed_mask: torch.Tensor | None = None,
+    petrinet=None,
 ) -> list[str]:
     """Greedily roll out ``n_steps`` activities, feeding predictions back in.
 
@@ -107,6 +146,10 @@ def generate_continuation(
     classes forbidden by the directly-follows automaton for the current last
     token are masked before the argmax -- the inference-time *output-refinement*
     guardrail. Without it, decoding is unconstrained (free-running).
+
+    ``petrinet`` is required by models carrying a ``marking_encoder``: their
+    symbolic channel has to be replayed from the generated prefix at every step
+    (see :class:`_MarkingRollout`). Plain models ignore it.
     """
 
     model.eval()
@@ -115,12 +158,25 @@ def generate_continuation(
     if allowed_mask is not None:
         allowed_mask = allowed_mask.to(device)
 
+    encoder = getattr(model, "marking_encoder", None)
+    rollout: _MarkingRollout | None = None
+    if encoder is not None:
+        if petrinet is None:
+            raise ValueError(
+                "This model reads Petri-net markings, so free-running generation "
+                "needs the net to replay its own predictions: pass petrinet=."
+            )
+        rollout = _MarkingRollout(petrinet, encoder.expects_sequences)
+        # token_ids start with START, which is not an event
+        rollout.reset([vocabulary.tokens[t] for t in prefix_token_ids[1:]])
+
     history = list(prefix_token_ids)
     generated: list[str] = []
     for _ in range(max(0, n_steps)):
         tokens = torch.tensor([history], dtype=torch.long, device=device)
         lengths = torch.tensor([len(history)], dtype=torch.long)
-        logits = model(tokens, lengths)[0]
+        markings = None if rollout is None else rollout.tensor(device)
+        logits = model(tokens, lengths, markings)[0]
         if allowed_mask is not None:
             allowed_row = allowed_mask[history[-1]]
             logits = logits.masked_fill(~allowed_row, float("-inf"))
@@ -128,6 +184,8 @@ def generate_continuation(
         activity = activities[class_id]
         generated.append(activity)
         history.append(token_to_id[activity])
+        if rollout is not None:
+            rollout.push(activity)
     return generated
 
 
@@ -142,6 +200,23 @@ class TracePredictionResult:
     exact_match_rate: float
     dfa_violation_rate: float
     precedence_violation_rate: float
+    #: Le stesse transizioni illegali, ma contate contro l'automa proiettato
+    #: dalla rete di Petri invece che contro il directly-follows empirico. NaN
+    #: quando l'automa della rete non viene passato al valutatore.
+    #:
+    #: Serve perche' le due strutture non vietano le stesse cose: la proiezione
+    #: della rete e' una sovra-approssimazione, quindi ammette comportamento mai
+    #: osservato ma strutturalmente possibile. Un metodo addestrato contro la
+    #: rete va misurato contro la rete, altrimenti gli si contano come
+    #: violazioni proprio le generalizzazioni che gli abbiamo chiesto di fare.
+    dfa_violation_rate_net: float = float("nan")
+    #: Fitness media, per token replay, della traccia COMPLETA (prefisso reale +
+    #: suffisso generato) contro la rete di Petri. NaN quando la rete non viene
+    #: passata al valutatore. E' l'unica metrica di conformita' che guarda la
+    #: traccia come oggetto intero invece che passo per passo: il
+    #: ``dfa_violation_rate`` conta le transizioni illegali, questa dice quanto
+    #: la rete riesce a rigiocare quello che il modello ha prodotto.
+    net_fitness: float = float("nan")
     examples: list[dict] = field(default_factory=list)
 
     def metrics(self) -> dict[str, float]:
@@ -150,7 +225,9 @@ class TracePredictionResult:
             "activity_accuracy": self.activity_accuracy,
             "exact_match_rate": self.exact_match_rate,
             "dfa_violation_rate": self.dfa_violation_rate,
+            "dfa_violation_rate_net": self.dfa_violation_rate_net,
             "precedence_violation_rate": self.precedence_violation_rate,
+            "net_fitness": self.net_fitness,
         }
 
 
@@ -201,6 +278,8 @@ def _score_records(
     automaton: ProcessDFA,
     constraints: Sequence[PrecedenceConstraint] | None,
     n_examples: int,
+    petrinet=None,
+    automaton_net: ProcessDFA | None = None,
 ) -> TracePredictionResult:
     if not records:
         raise ValueError("Cannot score whole-trace prediction without examples.")
@@ -213,7 +292,14 @@ def _score_records(
     exact = 0
     dfa_violations = 0
     dfa_transitions = 0
+    # Le tracce sono gia' generate: passarle su un secondo automa e' un giro di
+    # confronti su stringhe, non una seconda inferenza. Misurare contro entrambe
+    # le strutture costa quindi quasi niente, e non obbliga a scegliere quale
+    # delle due sia "il" metro.
+    net_violations = 0
+    net_transitions = 0
     precedence_violations = 0
+    full_traces: list[list[str]] = []
 
     for record in records:
         true = record["true"]
@@ -230,9 +316,24 @@ def _score_records(
         dfa_violations += violations
         dfa_transitions += transitions
 
+        if automaton_net is not None:
+            violations, transitions = _generated_dfa_violations(
+                automaton_net, record["prefix"], predicted
+            )
+            net_violations += violations
+            net_transitions += transitions
+
+        full_trace = [*record["prefix"], *predicted]
+        full_traces.append(full_trace)
         if constraints:
-            full_trace = [*record["prefix"], *predicted]
             precedence_violations += int(_violates_precedence(constraints, full_trace))
+
+    # Una sola chiamata su tutte le tracce ricostruite: e' una metrica, non una
+    # feature, quindi qui il replay in blocco e' la forma giusta.
+    net_fitness = float("nan")
+    if petrinet is not None:
+        scores = petrinet.trace_fitness(full_traces)
+        net_fitness = sum(scores) / len(scores) if scores else float("nan")
 
     return TracePredictionResult(
         setup=setup,
@@ -241,9 +342,14 @@ def _score_records(
         activity_accuracy=position_hits / position_total if position_total else 0.0,
         exact_match_rate=exact / total,
         dfa_violation_rate=dfa_violations / dfa_transitions if dfa_transitions else 0.0,
+        dfa_violation_rate_net=(
+            net_violations / net_transitions if net_transitions
+            else (0.0 if automaton_net is not None else float("nan"))
+        ),
         precedence_violation_rate=(
             precedence_violations / total if constraints else float("nan")
         ),
+        net_fitness=net_fitness,
         examples=records[:n_examples],
     )
 
@@ -258,6 +364,7 @@ def evaluate_trace_from_start(
     allowed_mask: torch.Tensor | None = None,
     constraints: Sequence[PrecedenceConstraint] | None = None,
     n_examples: int = 5,
+    petrinet=None,
 ) -> TracePredictionResult:
     """Generate each whole trace from ``START`` and score it against the truth."""
 
@@ -268,12 +375,13 @@ def evaluate_trace_from_start(
         if not trace:
             continue
         predicted = generate_continuation(
-            model, vocabulary, [start_id], len(trace), device, allowed_mask
+            model, vocabulary, [start_id], len(trace), device, allowed_mask, petrinet
         )
         records.append(
             {"case_id": case_id, "prefix": [], "true": trace, "predicted": predicted}
         )
-    return _score_records(records, "from_start", automaton, constraints, n_examples)
+    return _score_records(records, "from_start", automaton, constraints, n_examples,
+                          petrinet)
 
 
 def evaluate_suffix_prediction(
@@ -287,8 +395,25 @@ def evaluate_suffix_prediction(
     allowed_mask: torch.Tensor | None = None,
     constraints: Sequence[PrecedenceConstraint] | None = None,
     n_examples: int = 5,
+    petrinet=None,
+    fitness_net=None,
+    automaton_net: ProcessDFA | None = None,
 ) -> TracePredictionResult:
-    """Generate the suffix after each prefix length and score it (PPM protocol)."""
+    """Generate the suffix after each prefix length and score it (PPM protocol).
+
+    ``petrinet`` serve alla GENERAZIONE: solo le varianti con marking ne hanno
+    bisogno, per rigiocare le proprie predizioni durante il rollout.
+    ``fitness_net`` serve alla MISURA, e vale per ogni variante -- la fitness
+    della traccia ricostruita contro la rete non dipende da come il modello e'
+    fatto. Sono due parametri distinti perche' passare la rete a un modello che
+    non la usa cambierebbe il percorso di generazione.
+
+    ``automaton_net`` e' un SECONDO metro, non un sostituto: le stesse tracce
+    generate vengono contate anche contro l'automa proiettato dalla rete, e il
+    risultato finisce in ``dfa_violation_rate_net``. Le due strutture non
+    vietano le stesse cose, quindi tenerle entrambe evita di dover dichiarare
+    quale sia quella giusta.
+    """
 
     start_id = vocabulary.token_to_id[START]
     records: list[dict] = []
@@ -301,7 +426,8 @@ def evaluate_suffix_prediction(
             true_suffix = trace[k:]
             prefix_token_ids = [start_id, *vocabulary.encode_prefix(prefix)]
             predicted = generate_continuation(
-                model, vocabulary, prefix_token_ids, len(true_suffix), device, allowed_mask
+                model, vocabulary, prefix_token_ids, len(true_suffix), device,
+                allowed_mask, petrinet,
             )
             records.append(
                 {
@@ -312,4 +438,5 @@ def evaluate_suffix_prediction(
                     "predicted": predicted,
                 }
             )
-    return _score_records(records, "suffix", automaton, constraints, n_examples)
+    return _score_records(records, "suffix", automaton, constraints, n_examples,
+                          fitness_net, automaton_net)

@@ -8,7 +8,6 @@ from .logic import (
 from .models import (
     NextActivityGRU,
     NextActivityLSTM,
-    NextActivityTransformer,
     build_model,
     load_checkpoint,
 )
@@ -25,7 +24,6 @@ __all__ = [
     "EvaluationResult",
     "NextActivityGRU",
     "NextActivityLSTM",
-    "NextActivityTransformer",
     "TracePredictionResult",
     "TrainingResult",
     "build_allowed_mask",

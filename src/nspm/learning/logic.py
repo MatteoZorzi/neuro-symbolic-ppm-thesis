@@ -66,6 +66,42 @@ def build_allowed_mask(
     return mask
 
 
+def build_state_mask(automaton, vocabulary: ActivityVocabulary) -> torch.Tensor:
+    """Map a **reachability-automaton state** to the classes it allows.
+
+    The sibling of :func:`build_allowed_mask`, indexed by automaton state rather
+    than by the last input token. That is the whole point: a Petri net
+    distinguishes contexts the directly-follows view cannot, so projecting it
+    down to one row per activity (``ReachabilityAutomaton.to_process_dfa``)
+    throws away exactly the memory that makes the net worth having. This mask
+    keeps it, and :func:`forbidden_probability_mass` consumes it by passing the
+    per-example ``state_ids`` carried on the batch.
+
+    Two rows get the all-true (unconstrained) fallback, following the same
+    convention as :func:`build_allowed_mask`: a state permitting no vocabulary
+    activity, and the trap state. For the trap the choice is immaterial to the
+    gradient -- once a prefix is off-model every continuation is forbidden, the
+    forbidden mass is the constant 1 and its derivative vanishes -- but leaving
+    the constraint off says the honest thing: the net has no opinion about how
+    to continue a run it cannot explain.
+    """
+
+    n_states = max(automaton.states) + 1
+    mask = torch.zeros((n_states, len(vocabulary.activities)), dtype=torch.bool)
+    class_to_id = vocabulary.class_to_id
+    for state in automaton.states:
+        allowed_classes = [
+            class_to_id[activity]
+            for activity in automaton.allowed_activities(state)
+            if activity in class_to_id
+        ]
+        if allowed_classes and state != automaton.trap_state:
+            mask[state, allowed_classes] = True
+        else:
+            mask[state] = True
+    return mask
+
+
 def last_token_ids(tokens: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
     """Select the final non-padding input token for each prefix."""
 
@@ -78,10 +114,18 @@ def forbidden_probability_mass(
     tokens: torch.Tensor,
     lengths: torch.Tensor,
     allowed_mask: torch.Tensor,
+    state_ids: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Mean probability assigned to DFA-forbidden next activities."""
+    """Mean probability assigned to DFA-forbidden next activities.
 
-    state_ids = last_token_ids(tokens, lengths)
+    ``state_ids`` overrides how a row of ``allowed_mask`` is selected. Left at
+    ``None`` the row is the last input token, which is what a directly-follows
+    automaton is indexed by. Passing ``batch.automaton_states`` instead selects
+    by reachability-automaton state, for a mask from :func:`build_state_mask`.
+    """
+
+    if state_ids is None:
+        state_ids = last_token_ids(tokens, lengths)
     allowed = allowed_mask[state_ids]
     probabilities = torch.softmax(logits, dim=1)
     return (probabilities * ~allowed).sum(dim=1).mean()

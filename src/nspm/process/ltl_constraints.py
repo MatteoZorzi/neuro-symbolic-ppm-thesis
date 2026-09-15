@@ -274,3 +274,45 @@ def sample_unsatisfying_trace(
         earlier_pos = rng.randrange(later_pos + 1, length)
         trace[earlier_pos] = constraint.earlier
     return tuple(trace)
+
+
+def satisfies_all(
+    constraints: Sequence[PrecedenceConstraint], trace: Sequence[str]
+) -> bool:
+    """True iff the trace breaks no *relevant* mined constraint.
+
+    A constraint is relevant to a trace only when its ``later`` activity
+    actually occurs: a rule about an activity the trace never performs is
+    vacuously satisfied and must not count as compliance evidence either way.
+    This is the same notion used to score generated suffixes in
+    :mod:`learning.trace_prediction`.
+    """
+
+    present = set(trace)
+    return not any(
+        constraint.later in present and not constraint.is_satisfied(trace)
+        for constraint in constraints
+    )
+
+
+def compliance_ratio(
+    constraints: Sequence[PrecedenceConstraint], traces: Iterable[Sequence[str]]
+) -> float:
+    """Fraction of traces satisfying every relevant constraint.
+
+    This is the log-level statistic Mezini et al. (2026) report in their
+    Table 2: start from a compliant training set, inject event-level noise, and
+    watch the ratio collapse. It is the number that makes the noise axis
+    interpretable -- without it, "40% noise" says nothing about how much
+    process knowledge survives in the data the model actually sees.
+
+    Returns 1.0 for an empty constraint set (nothing can be violated) so the
+    value stays readable when mining finds no rule.
+    """
+
+    traces = list(traces)
+    if not traces:
+        return float("nan")
+    if not constraints:
+        return 1.0
+    return sum(satisfies_all(constraints, trace) for trace in traces) / len(traces)

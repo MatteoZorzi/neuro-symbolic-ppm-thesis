@@ -14,7 +14,7 @@ dati"). Qui la rete oracolo e' il caso piu' generoso possibile:
     dal futuro delle altre tracce, cioe' la dimensione del leak.
 
 Confronto: stessi seed, stessi split, stessa architettura; cambia SOLO il log
-da cui viene minata la rete. Nulla di tutto questo entra in final_matrix.py.
+da cui viene minata la rete. Nulla di tutto questo entra nell'esperimento.
 """
 
 import csv

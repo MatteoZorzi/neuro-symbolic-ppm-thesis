@@ -30,7 +30,15 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from nspm.config import ExperimentConfig
 from nspm.data.loader import read_log
-from nspm.data.preparation import TraceSplits, TraceUtils, PrefixLog, ActivityVocabulary
+from nspm.data.preparation import (
+    TraceSplits,
+    TraceUtils,
+    PrefixLog,
+    ActivityVocabulary,
+    build_splits,
+    build_vocabulary,
+    knowledge_traces,
+)
 from nspm.process.petrinet import PetriNet
 from nspm.process.automaton import ProcessDFA
 from nspm.learning.training import train_model, resolve_device
@@ -42,18 +50,19 @@ out_dir = ROOT / "runs" / "_t10_noise_grid"
 out_dir.mkdir(parents=True, exist_ok=True)
 results_csv = out_dir / "results.csv"
 
-events = read_log(log_path)
-traces = TraceUtils.extract_traces(events)
-splits = TraceSplits.from_traces(traces)
-
-# artefatti simbolici solo dal train; il label noise non tocca le tracce,
-# quindi rete/DFA/marking restano identici a tutti i livelli di corruzione
-vocab = ActivityVocabulary.from_traces(splits.train.values())
-petrinet = PetriNet.from_traces(splits.train)
-automaton = ProcessDFA.from_traces(splits.train.values())
-mask = build_allowed_mask(automaton, vocab)
-
 config = ExperimentConfig()
+
+events = read_log(log_path)
+splits = build_splits(events, config)
+
+# artefatti simbolici dalla partizione indicata da ``knowledge_source`` (train
+# di default); il label noise non tocca le tracce, quindi rete/DFA/marking
+# restano identici a tutti i livelli di corruzione
+vocab = build_vocabulary(splits, config)
+knowledge = knowledge_traces(splits, config)
+petrinet = PetriNet.from_traces(knowledge)
+automaton = ProcessDFA.from_traces(knowledge.values())
+mask = build_allowed_mask(automaton, vocab)
 
 # log base costruiti UNA volta (with_markings costa ~35s); la corruzione
 # per cella e' cheap e preserva i marking (replace tocca solo target_id)

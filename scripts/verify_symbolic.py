@@ -28,7 +28,7 @@ from nspm.process.ltl_constraints import (
 rng = random.Random(0)
 failures = 0
 
-# --- 1. DFA <-> LTLf semantics equivalence (the heart of the embedder branch) ---
+# --- 1. DFA <-> LTLf semantics equivalence ---
 alphabet = [f"act{i}" for i in range(6)]
 n_checked = 0
 for _ in range(200):

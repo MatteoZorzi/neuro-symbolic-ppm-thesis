@@ -18,10 +18,15 @@ INDEX = "@@index"
 def read_log(path: str | Path, max_cases: int | None = None) -> pd.DataFrame:
     # Reads csv or xes log file
 
+    # Si guarda l'estensione "vera", non l'ultima: i log pubblici arrivano
+    # spesso gzippati (``BPI_Challenge_2012.xes.gz``) e per ``Path.suffix``
+    # quello e' un ``.gz``. Sia pm4py sia pandas leggono il compresso da soli,
+    # quindi basta indirizzare la chiamata giusta.
     path = Path(path)
-    if path.suffix.lower() == ".xes":
+    suffixes = [s.lower() for s in path.suffixes]
+    if ".xes" in suffixes:
         return read_xes(path, max_cases)
-    elif path.suffix.lower() == ".csv":
+    elif ".csv" in suffixes:
         return read_csv(path, max_cases)
     else:
         raise ValueError(f"Unsupported file format: {path}")
