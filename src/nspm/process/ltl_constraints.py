@@ -1,29 +1,4 @@
-"""LTLf temporal constraints and their DFAs for the learned-embedder branch.
-
-This module supplies the *symbolic temporal knowledge* that the original
-``ProcessDFA`` (a directly-follows automaton) does not capture. Where the
-directly-follows automaton only encodes one-step ``next`` relations, here we
-mine genuine LTLf **precedence** constraints from the training traces and build,
-for each one, a small deterministic automaton whose edges carry propositional
-guards over the activity alphabet.
-
-A precedence constraint "``a`` precedes ``b``" is written in finite LTL as::
-
-    (¬b U a) ∨ G(¬b)
-
-i.e. ``b`` may not occur until ``a`` has occurred (and a trace with no ``b`` at
-all trivially satisfies it). This is exactly the kind of ordering constraint the
-T-LEAF paper expresses in LTLf and compiles to a DFA via LTLfKit/spot. Because
-neither ``spot`` nor ``ltlf2dfa`` is available in this environment, the (tiny,
-three-state) DFA for each precedence constraint is constructed directly instead
-of being compiled from the formula string. The formula string is still produced
-by :meth:`PrecedenceConstraint.to_ltlf` for inspection and provenance.
-
-No general LTLf compiler is used, so only the precedence template is supported;
-conjunctions of constraints are handled at the loss level (one DFA per relevant
-constraint) rather than by building a product automaton -- see
-``learning/logic.py``.
-"""
+# LTLf temporal constraints and their DFAs for the learned-embedder branch
 
 from __future__ import annotations
 
@@ -40,14 +15,9 @@ COMMON = 1
 FINAL = 2
 
 
+# A propositional edge guard over the one-hot activity alphabet
 @dataclass(frozen=True)
 class Guard:
-    """A propositional edge guard over the one-hot activity alphabet.
-
-    Exactly one activity is true at each step of a process trace, so a guard is
-    fully described by the activities it requires (``positives``), the
-    activities it forbids (``negatives``), or the catch-all ``is_true`` guard.
-    """
 
     positives: tuple[str, ...] = ()
     negatives: tuple[str, ...] = ()
@@ -75,15 +45,9 @@ class Guard:
         return bool(self.positives) or bool(self.negatives)
 
 
+# A small deterministic automaton with propositional edge guards
 @dataclass(frozen=True)
 class ConstraintDFA:
-    """A small deterministic automaton with propositional edge guards.
-
-    ``accepting`` is stored explicitly rather than derived from ``node_types``:
-    the initial state can be both the start state (node type ``INIT``, used for
-    feature typing and random-walk seeding) *and* an accepting state (an empty
-    trace satisfies a precedence rule), so the two notions must be independent.
-    """
 
     init_state: int
     node_types: Mapping[int, int]
@@ -94,8 +58,8 @@ class ConstraintDFA:
     def states(self) -> tuple[int, ...]:
         return tuple(sorted(self.node_types))
 
+    # Run the (deterministic) automaton and test for acceptance
     def accepts(self, trace: Sequence[str]) -> bool:
-        """Run the (deterministic) automaton and test for acceptance."""
 
         state = self.init_state
         for activity in trace:
@@ -110,22 +74,22 @@ class ConstraintDFA:
         return state in self.accepting
 
 
+# The LTLf constraint "``earlier`` precedes ``later``"
 @dataclass(frozen=True)
 class PrecedenceConstraint:
-    """The LTLf constraint "``earlier`` precedes ``later``"."""
 
     earlier: str
     later: str
     support: int
     confidence: float
 
+    # Return the finite-LTL string ``(¬b U a) ∨ G(¬b)``
     def to_ltlf(self) -> str:
-        """Return the finite-LTL string ``(¬b U a) ∨ G(¬b)``."""
 
         return f"(!'{self.later}' U '{self.earlier}') | G(!'{self.later}')"
 
+    # True iff ``later`` never appears before the first ``earlier``
     def is_satisfied(self, trace: Sequence[str]) -> bool:
-        """True iff ``later`` never appears before the first ``earlier``."""
 
         for activity in trace:
             if activity == self.later:
@@ -134,8 +98,8 @@ class PrecedenceConstraint:
                 return True
         return True  # ``later`` never occurred.
 
+    # Build the three-state DFA accepting traces that satisfy this rule
     def to_dfa(self) -> ConstraintDFA:
-        """Build the three-state DFA accepting traces that satisfy this rule."""
 
         # State 0: initial and accepting (no ``later`` seen yet).
         # State 1: ``earlier`` has been seen -> ``later`` now permitted (accept).
@@ -158,6 +122,7 @@ class PrecedenceConstraint:
         )
 
 
+# Mine high-confidence precedence rules from (training) traces
 def mine_precedence_constraints(
     traces: Iterable[Sequence[str]],
     *,
@@ -165,13 +130,6 @@ def mine_precedence_constraints(
     min_confidence: float = 0.98,
     max_constraints: int = 40,
 ) -> list[PrecedenceConstraint]:
-    """Mine high-confidence precedence rules from (training) traces.
-
-    A candidate "``a`` precedes ``b``" is scored over the traces that contain
-    ``b`` (its support). Confidence is the fraction of those traces in which
-    ``a`` occurs strictly before the first ``b``. Rules meeting both thresholds
-    are returned, strongest first, capped at ``max_constraints``.
-    """
 
     traces = [tuple(trace) for trace in traces if trace]
     activities = sorted({activity for trace in traces for activity in trace})
@@ -211,20 +169,17 @@ def mine_precedence_constraints(
     return candidates[:max_constraints]
 
 
+# Constraints whose consequent ``later`` activity appears in the trace
 def relevant_constraints(
     constraints: Sequence[PrecedenceConstraint],
     trace_activities: Iterable[str],
 ) -> list[PrecedenceConstraint]:
-    """Constraints whose consequent ``later`` activity appears in the trace.
-
-    These are the only constraints a trace can actually violate, mirroring the
-    paper's per-sample selection of clauses whose propositions are present.
-    """
 
     present = set(trace_activities)
     return [c for c in constraints if c.later in present]
 
 
+# Synthesize a trace that satisfies the precedence constraint
 def sample_satisfying_trace(
     constraint: PrecedenceConstraint,
     alphabet: Sequence[str],
@@ -232,11 +187,6 @@ def sample_satisfying_trace(
     length: int,
     rng: random.Random,
 ) -> tuple[str, ...]:
-    """Synthesize a trace that satisfies the precedence constraint.
-
-    With probability 1/2 the ``later`` activity is omitted entirely; otherwise
-    ``earlier`` is placed strictly before the first ``later``.
-    """
 
     others = [a for a in alphabet if a not in (constraint.earlier, constraint.later)]
     length = max(length, 3)
@@ -254,6 +204,8 @@ def sample_satisfying_trace(
     return tuple(trace)
 
 
+# Synthesize a trace that violates the constraint (``later`` before
+# ``earlier``)
 def sample_unsatisfying_trace(
     constraint: PrecedenceConstraint,
     alphabet: Sequence[str],
@@ -261,7 +213,6 @@ def sample_unsatisfying_trace(
     length: int,
     rng: random.Random,
 ) -> tuple[str, ...]:
-    """Synthesize a trace that violates the constraint (``later`` before ``earlier``)."""
 
     others = [a for a in alphabet if a not in (constraint.earlier, constraint.later)]
     length = max(length, 3)
@@ -276,17 +227,10 @@ def sample_unsatisfying_trace(
     return tuple(trace)
 
 
+# True iff the trace breaks no *relevant* mined constraint
 def satisfies_all(
     constraints: Sequence[PrecedenceConstraint], trace: Sequence[str]
 ) -> bool:
-    """True iff the trace breaks no *relevant* mined constraint.
-
-    A constraint is relevant to a trace only when its ``later`` activity
-    actually occurs: a rule about an activity the trace never performs is
-    vacuously satisfied and must not count as compliance evidence either way.
-    This is the same notion used to score generated suffixes in
-    :mod:`learning.trace_prediction`.
-    """
 
     present = set(trace)
     return not any(
@@ -295,20 +239,10 @@ def satisfies_all(
     )
 
 
+# Fraction of traces satisfying every relevant constraint
 def compliance_ratio(
     constraints: Sequence[PrecedenceConstraint], traces: Iterable[Sequence[str]]
 ) -> float:
-    """Fraction of traces satisfying every relevant constraint.
-
-    This is the log-level statistic Mezini et al. (2026) report in their
-    Table 2: start from a compliant training set, inject event-level noise, and
-    watch the ratio collapse. It is the number that makes the noise axis
-    interpretable -- without it, "40% noise" says nothing about how much
-    process knowledge survives in the data the model actually sees.
-
-    Returns 1.0 for an empty constraint set (nothing can be violated) so the
-    value stays readable when mining finds no rule.
-    """
 
     traces = list(traces)
     if not traces:

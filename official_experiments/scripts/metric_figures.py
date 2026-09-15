@@ -1,26 +1,5 @@
-"""Draw the per-metric noise curves of \\cref{sec:exp-results}, one per protocol.
+# Draw the per-metric noise curves of the results chapter, one per protocol
 
-The chapter presents each metric once, for all eight models, and the table that
-goes with it averages the logs away. The figure is where the logs come back: a
-panel each, the noise on the x axis, one line per model. What the reader is
-meant to compare between panels is the *shape* of the curves, not their level,
-so the y axis is free in every panel.
-
-Test and train are two figures and never two halves of one. Between the two
-protocols the mined net changes, so the mask the metric is measured against
-changes with it, and two curves drawn side by side would invite a comparison of
-levels that the numbers do not support.
-
-The heading puts the title on the first line, the legend on the second and the
-panels below. The palette and the markers come from :mod:`common`, so that a
-model keeps its colour across every figure in the thesis.
-
-The value of a point is the median over the five seeds. Seeds are aggregated
-inside the cell, before anything else touches the number.
-
-    python official_experiments/scripts/metric_figures.py
-    python official_experiments/scripts/metric_figures.py --metric accuracy
-"""
 from __future__ import annotations
 
 import argparse
@@ -76,8 +55,8 @@ STYLE = {
 }
 
 
+# Median over the seeds, per log, model and noise level
 def curves(grid: pd.DataFrame, metric: str) -> pd.DataFrame:
-    """Median over the seeds, per log, model and noise level."""
     return (grid[grid["variant"].isin(VARIANTS)]
             .groupby(["dataset", "variant", "noise"], observed=True)[metric]
             .median().reset_index())
@@ -150,19 +129,9 @@ def draw(table: pd.DataFrame, metric: str, protocol: str, path: Path) -> None:
 FIGSIZE_PAIRED = (5.7, 6.6)
 
 
+# One figure for both protocols: logs down the rows, protocols across
 def draw_paired(tables: dict[str, pd.DataFrame], metric: str, path: Path
                 ) -> None:
-    """One figure for both protocols: logs down the rows, protocols across.
-
-    The alternative to two stacked figures. Panels keep the width they have in
-    the stacked layout, because two columns of a full-width figure are as wide
-    as two columns of a half-height one, and the page saves a heading, a caption
-    and the white space between two floats.
-
-    The y axis stays free in every panel, here as there. Two panels in a row
-    share a log but not a mined net, so their levels are no more comparable side
-    by side than they were on facing pages.
-    """
     protocols = list(tables)
     logs = [d for d in DATASET_ORDER
             if any(d in set(t["dataset"]) for t in tables.values())]
@@ -224,7 +193,8 @@ def draw_paired(tables: dict[str, pd.DataFrame], metric: str, path: Path
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description="Draw the per-metric noise curves, one figure per protocol.")
     parser.add_argument("--metric", default="forbidden_net",
                         choices=sorted(AXIS_LABEL))
     parser.add_argument("--out", type=Path, default=FIGURES)

@@ -1,17 +1,4 @@
-"""Differentiable process constraints derived from the empirical DFA.
-
-Two differentiable logic losses live here:
-
-* :func:`forbidden_probability_mass` -- the **checker** loss. It penalises the
-  probability the model assigns to next activities forbidden by the empirical
-  directly-follows automaton. This corresponds to the model-checker branch of
-  T-LEAF (a hard automaton turned into a direct probability penalty).
-* :class:`EmbeddingLogicLoss` -- the **embedder** loss. It implements the actual
-  T-LEAF logic loss ``‖q(A) − q(w_pred)‖²``: the squared distance, in the
-  learned embedding space, between a relevant constraint's DFA embedding and the
-  embedding of the model's predicted continuation. This is the branch the
-  original Sepsis pipeline lacked.
-"""
+# Differentiable process constraints derived from the empirical DFA
 
 from __future__ import annotations
 
@@ -27,19 +14,11 @@ from ..process.ltl_constraints import PrecedenceConstraint, relevant_constraints
 from .models import symbolic_input
 
 
+# Map the last input token to the classes allowed by the automaton
 def build_allowed_mask(
     automaton: ProcessDFA,
     vocabulary: ActivityVocabulary,
 ) -> torch.Tensor:
-    """Map the last input token to the classes allowed by the automaton.
-
-    The legal next activities come from :meth:`ProcessDFA.allowed_activities`,
-    the single source of truth shared with the generated-trace conformance
-    metric. A state with no known real-activity successor (seen only at trace
-    end, or never seen as a source) receives an all-true row: this conservative
-    fallback avoids forcing an arbitrary action for unconstrained states, and
-    the conformance metric mirrors it by not penalising those transitions.
-    """
 
     mask = torch.zeros(
         (len(vocabulary.tokens), len(vocabulary.activities)), dtype=torch.bool
@@ -66,25 +45,8 @@ def build_allowed_mask(
     return mask
 
 
+# Map a **reachability-automaton state** to the classes it allows
 def build_state_mask(automaton, vocabulary: ActivityVocabulary) -> torch.Tensor:
-    """Map a **reachability-automaton state** to the classes it allows.
-
-    The sibling of :func:`build_allowed_mask`, indexed by automaton state rather
-    than by the last input token. That is the whole point: a Petri net
-    distinguishes contexts the directly-follows view cannot, so projecting it
-    down to one row per activity (``ReachabilityAutomaton.to_process_dfa``)
-    throws away exactly the memory that makes the net worth having. This mask
-    keeps it, and :func:`forbidden_probability_mass` consumes it by passing the
-    per-example ``state_ids`` carried on the batch.
-
-    Two rows get the all-true (unconstrained) fallback, following the same
-    convention as :func:`build_allowed_mask`: a state permitting no vocabulary
-    activity, and the trap state. For the trap the choice is immaterial to the
-    gradient -- once a prefix is off-model every continuation is forbidden, the
-    forbidden mass is the constant 1 and its derivative vanishes -- but leaving
-    the constraint off says the honest thing: the net has no opinion about how
-    to continue a run it cannot explain.
-    """
 
     n_states = max(automaton.states) + 1
     mask = torch.zeros((n_states, len(vocabulary.activities)), dtype=torch.bool)
@@ -102,13 +64,14 @@ def build_state_mask(automaton, vocabulary: ActivityVocabulary) -> torch.Tensor:
     return mask
 
 
+# Select the final non-padding input token for each prefix
 def last_token_ids(tokens: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
-    """Select the final non-padding input token for each prefix."""
 
     row_ids = torch.arange(tokens.size(0), device=tokens.device)
     return tokens[row_ids, lengths - 1]
 
 
+# Mean probability assigned to DFA-forbidden next activities
 def forbidden_probability_mass(
     logits: torch.Tensor,
     tokens: torch.Tensor,
@@ -116,13 +79,6 @@ def forbidden_probability_mass(
     allowed_mask: torch.Tensor,
     state_ids: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Mean probability assigned to DFA-forbidden next activities.
-
-    ``state_ids`` overrides how a row of ``allowed_mask`` is selected. Left at
-    ``None`` the row is the last input token, which is what a directly-follows
-    automaton is indexed by. Passing ``batch.automaton_states`` instead selects
-    by reachability-automaton state, for a mask from :func:`build_state_mask`.
-    """
 
     if state_ids is None:
         state_ids = last_token_ids(tokens, lengths)
@@ -131,13 +87,13 @@ def forbidden_probability_mass(
     return (probabilities * ~allowed).sum(dim=1).mean()
 
 
+# Boolean vector indicating whether each top-1 prediction is forbidden
 def prediction_violations(
     logits: torch.Tensor,
     tokens: torch.Tensor,
     lengths: torch.Tensor,
     allowed_mask: torch.Tensor,
 ) -> torch.Tensor:
-    """Boolean vector indicating whether each top-1 prediction is forbidden."""
 
     state_ids = last_token_ids(tokens, lengths)
     predictions = logits.argmax(dim=1)
@@ -146,6 +102,7 @@ def prediction_violations(
     return ~allowed[row_ids, predictions]
 
 
+# Fraction of next-activity predictions that break a precedence constraint
 @torch.no_grad()
 def precedence_violation_rate(
     model,
@@ -154,14 +111,6 @@ def precedence_violation_rate(
     vocabulary: ActivityVocabulary,
     device: torch.device,
 ) -> float:
-    """Fraction of next-activity predictions that break a precedence constraint.
-
-    A prediction violates "``a`` precedes ``b``" when the predicted activity is
-    ``b`` and ``a`` has not appeared in the prefix. This is the conformance
-    metric aligned with the *embedder* branch's knowledge (mined LTLf precedence
-    rules), complementing ``forbidden_mass``/``violation_rate`` which measure
-    conformance to the directly-follows automaton used by the checker branch.
-    """
 
     required_earlier: dict[str, set[str]] = {}
     for constraint in constraints:
@@ -192,22 +141,8 @@ def precedence_violation_rate(
     return violations / total if total else 0.0
 
 
+# The learned-embedder T-LEAF logic loss ``‖q(A) − q(w_pred)‖²``
 class EmbeddingLogicLoss:
-    """The learned-embedder T-LEAF logic loss ``‖q(A) − q(w_pred)‖²``.
-
-    For each (sub-sampled) prefix in a batch, the predicted continuation
-    ``w_pred = prefix + soft(next)`` is embedded with the *frozen* hierarchical
-    embedder. Its squared distance to the embedding of every relevant
-    constraint's DFA forms the penalty. The final activity is represented by a
-    probability-weighted soft feature, so the penalty is differentiable w.r.t.
-    the task model's logits.
-
-    The embedder is frozen, so each constraint DFA embedding ``q(A)`` is constant
-    throughout target-model training and is cached once. Following the paper,
-    only constraints *relevant* to a prefix are used; multiple relevant
-    constraints are combined by averaging their per-DFA distances rather than by
-    building a product automaton (a deliberate tractability simplification).
-    """
 
     def __init__(
         self,

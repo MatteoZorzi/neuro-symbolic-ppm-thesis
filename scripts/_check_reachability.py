@@ -1,12 +1,6 @@
-"""Checks for process/reachability.py, the Python port of DpnReachabilityWoGuards.java.
+# Checks for process/reachability.py, the Python port of
+# DpnReachabilityWoGuards.java
 
-Structural checks run on hand-built nets (sequence, XOR, AND, silent skip,
-silent loop); language equivalence is then cross-checked against pm4py
-alignments, which are exact.
-
-    python scripts/_check_reachability.py              # fast checks only
-    python scripts/_check_reachability.py --alignments # + alignment cross-check (slow)
-"""
 import sys
 from pathlib import Path
 
@@ -25,8 +19,8 @@ from nspm.process.reachability import ReachabilityAutomaton
 WITH_ALIGNMENTS = "--alignments" in sys.argv
 
 
+# Assemble a pm4py net; ``transitions`` maps name -> label (None = silent)
 def build(places, transitions, arcs):
-    """Assemble a pm4py net; ``transitions`` maps name -> label (None = silent)."""
     net = Pm4pyNet("check")
     nodes = {}
     for name in places:

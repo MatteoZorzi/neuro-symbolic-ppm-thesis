@@ -38,13 +38,12 @@ class DataConfig:
     #: net) is discovered from. ``"test"`` follows Mezini et al. (2026) Sec. 4.1.
     knowledge_source: str = "train"
 
-    #: Cosa corrompe il rumore. ``"target"`` sostituisce solo l'etichetta da
-    #: predire, lasciando intatti i prefissi e quindi la conformita' del log
-    #: (comportamento originale della T12). ``"event"`` sostituisce l'etichetta
-    #: di un evento nella traccia, quindi il danno si propaga ai prefissi
-    #: successivi, al replay sulla rete di Petri e alla conformita' -- il
-    #: modello di Mezini et al. (2026) Sec. 4.1. Sono due regimi diversi, non
-    #: due intensita' della stessa cosa.
+    #: What the noise corrupts. ``"target"`` replaces only the label to be
+    #: predicted, leaving the prefixes and therefore the compliance of the log
+    #: intact. ``"event"`` replaces the label of an event inside the trace, so
+    #: the damage propagates to the later prefixes, to the replay on the Petri
+    #: net and to compliance -- the model of Mezini et al. (2026) Sec. 4.1.
+    #: Two different regimes, not two intensities of the same thing.
     noise_model: str = "target"
 
     def __post_init__(self) -> None:
@@ -72,9 +71,9 @@ class ModelConfig:
 
     embedding_dim: int = 32
     hidden_dim: int = 64
-    #: Strati impilati del tronco ricorrente, GRU o LSTM che sia. Uno basta per
-    #: la baseline compatta; Mezini et al. (2026) ne usano due da 100 unita', e
-    #: quella e' la taglia da passare quando si vuole il loro tronco.
+    #: Stacked layers of the recurrent trunk, GRU or LSTM alike. One is enough
+    #: for the compact baseline; Mezini et al. (2026) use two of 100 units, and
+    #: that is the size to pass when their trunk is wanted.
     recurrent_layers: int = 1
     dropout: float = 0.20
 
@@ -122,34 +121,13 @@ class ExperimentConfig:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+# Config for the temporal / knowledge-from-test protocol
 def temporal_protocol(
     seed: int = 42,
     validation_fraction: float = 0.15,
     test_fraction: float = 0.15,
     **overrides: Any,
 ) -> ExperimentConfig:
-    """Config for the temporal / knowledge-from-test protocol.
-
-    Bundles the three switches that define it, so an experiment script states
-    the protocol once instead of setting the flags one by one:
-
-    * ``split_strategy="temporal"`` -- cases ordered by first-event timestamp,
-      cut by position, no shuffling and no seed;
-    * ``vocabulary_scope="all"`` -- alphabet over every partition, so no case is
-      dropped for containing an activity the training block never saw;
-    * ``knowledge_source="test"`` -- DFA, precedence constraints and Petri net
-      discovered from the test partition, per Mezini et al. (2026) Sec. 4.1;
-    * ``noise_model="event"`` -- the corruption hits the events of the trace,
-      not just the label to predict, so it propagates to later prefixes and to
-      the log's conformance (same paper, same section).
-
-    Defaults give a 70/15/15 temporal partition; pass the fractions to change
-    it, e.g. ``temporal_protocol(validation_fraction=0.10, test_fraction=0.20)``
-    for the paper's 80/20 with a small validation block carved out.
-
-    ``seed`` no longer affects the split (which is deterministic) but still
-    drives weight initialisation and noise injection.
-    """
 
     return ExperimentConfig(
         seed=seed,

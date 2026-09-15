@@ -1,20 +1,4 @@
-"""Hierarchical DFA embedder (edge embedder ``qe`` + meta embedder ``qm``).
-
-This is the core component the original Sepsis pipeline was missing. It is
-adapted from the original T-LEAF embedder modules in
-``src/Synthetic/models/models.py`` (``Edge_Embedder`` and
-``Node_only_random_agg``):
-
-* :class:`EdgeEmbedder` (``qe``) -- a two-layer GCN that turns an edge's
-  propositional OR/AND/literal graph into a single ``node_dim`` vector.
-* :class:`MetaEmbedder` (``qm``) -- a multi-layer GCN over the edge-lifted
-  automaton graph, aggregated by random walks seeded at the initial node and
-  L2-normalised, producing the final ``out_dim`` embedding.
-
-:class:`HierarchicalEmbedder` (``q``) composes them and exposes
-:meth:`embed_dfa` and :meth:`embed_trace`, returning embeddings in a shared
-real-vector space so that distances implement the logic loss.
-"""
+# Hierarchical DFA embedder (edge embedder ``qe`` + meta embedder ``qm``)
 
 from __future__ import annotations
 
@@ -37,6 +21,7 @@ def _neighbour_list(num_nodes: int, edge_index: torch.Tensor) -> list[list[int]]
     return neighbours
 
 
+# Random walks from ``start_index`` (the initial automaton node)
 def _sample_paths(
     neighbours: list[list[int]],
     *,
@@ -45,7 +30,6 @@ def _sample_paths(
     max_length: int,
     rng: random.Random,
 ) -> list[list[int]]:
-    """Random walks from ``start_index`` (the initial automaton node)."""
 
     paths: list[list[int]] = []
     for _ in range(num_paths):
@@ -60,8 +44,8 @@ def _sample_paths(
     return paths
 
 
+# ``qe``: embed an edge's proposition graph into a node-level vector
 class EdgeEmbedder(torch.nn.Module):
-    """``qe``: embed an edge's proposition graph into a node-level vector."""
 
     def __init__(self, prop_dim: int = 50, hidden_dim: int = 200, node_dim: int = 100,
                  dropout: float = 0.0) -> None:
@@ -77,8 +61,8 @@ class EdgeEmbedder(torch.nn.Module):
         return torch.mean(out, dim=0, keepdim=True)  # [1, node_dim]
 
 
+# ``qm``: embed the edge-lifted automaton graph via random-walk aggregation
 class MetaEmbedder(torch.nn.Module):
-    """``qm``: embed the edge-lifted automaton graph via random-walk aggregation."""
 
     def __init__(self, node_dim: int = 100, hidden_dim: int = 256, out_dim: int = 200,
                  dropout: float = 0.0, num_paths: int = 10, max_length: int = 5,
@@ -133,8 +117,8 @@ class MetaEmbedder(torch.nn.Module):
         return pooled
 
 
+# ``q = (qe, qm)``: shared embedder for constraint DFAs and traces
 class HierarchicalEmbedder(torch.nn.Module):
-    """``q = (qe, qm)``: shared embedder for constraint DFAs and traces."""
 
     def __init__(self, prop_dim: int = 50, node_dim: int = 100, out_dim: int = 200,
                  edge_hidden: int = 200, meta_hidden: int = 256, dropout: float = 0.0,

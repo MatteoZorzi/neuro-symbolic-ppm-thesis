@@ -1,8 +1,5 @@
-"""Scratch check for process/petrinet.py against the probe's known-good numbers.
+# Scratch check for process/petrinet.py against the probe's known-good numbers
 
-Expected on Sepsis train split (from scripts/_probe_petrinet_feasibility.py):
-26 places, 34 transitions (19 silent), 80 arcs.
-"""
 import sys
 from pathlib import Path
 
@@ -27,8 +24,8 @@ print(f"init marking: {net.init_marking} | final marking: {net.final_marking}")
 print(f"place_index size: {len(net.place_index)}")
 
 
+# Human-readable view: only the places holding tokens
 def occupied(marking_vector):
-    """Human-readable view: only the places holding tokens."""
     return {net.places[i].name: v for i, v in enumerate(marking_vector) if v}
 
 

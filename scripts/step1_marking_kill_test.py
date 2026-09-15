@@ -1,15 +1,4 @@
-"""Kill test — scala di ablazione a quattro gradini sul marking della Petri net.
-Run gemelli (stessa config, stesso seed, stessi dati), cambia solo l'encoder:
-  1. gru          — nessun marking (baseline);
-  2. gru_marking  — marking piatto concatenato (stato senza struttura);
-  3. gru_gnn      — marking dentro HeteroGraphEncoder (stato con struttura);
-  4. gru_seq      — TUTTA la storia dei marking, una GNN per passo + GRU
-                    (stato con struttura E tempo).
-Lettura: delta(2-1) ~0 gia' noto (rumore, 14 lug); delta(3-2) ~0 e negativo
-(15 lug: la struttura sullo snapshot finale non aggiunge nulla). La domanda
-dello Step 3 e' delta(4-3): se la sequenza batte lo snapshot, il merito e'
-del tempo — cioe' di cio' che il loop overwriting cancella dallo snapshot.
-"""
+# Kill test — scala di ablazione a quattro gradini sul marking della Petri net
 
 import sys
 from dataclasses import replace
@@ -56,12 +45,12 @@ data_loader = {
         "test" : PrefixLog.from_traces(splits.test, vocab).with_markings(petrinet).data_loader(config.data.batch_size, shuffle=False)
     }
 }
-# La gnn mangia gli stessi batch marcati del piatto: cambia l'encoder, non i dati.
+# The gnn eats the same marked batches as the flat one: the encoder changes, not the data.
 data_loader["gru_gnn"] = data_loader["gru_marking"]
 
-# Il sequenziale e' l'unico che cambia anche i DATI: gli servono i k+1 marking
-# dell'intero prefisso, non solo l'ultimo (l'ultimo passo resta pero' identico
-# allo snapshot del gradino 3, quindi il confronto e' onesto).
+# The sequential one is the only rung that changes the DATA too: it needs the
+# k+1 markings of the whole prefix, not just the last one (the last step stays
+# identical to the rung-3 snapshot, so the comparison is honest).
 def sequence_log(traces_map, shuffle):
     log = PrefixLog.from_traces(traces_map, vocab).with_markings(petrinet).with_marking_sequences(petrinet)
     return log.data_loader(config.data.batch_size, shuffle=shuffle)
@@ -78,7 +67,7 @@ device = resolve_device(config.training.device)
 
 deltas_flat = []   # gradino 2 - gradino 1 (gia' noto: rumore)
 deltas_gnn = []    # gradino 3 - gradino 2 (la domanda dello Step 2)
-deltas_seq = []    # gradino 4 - gradino 3 (la domanda dello Step 3: il tempo)
+deltas_seq = []    # rung 4 - rung 3 (the question of Step 3: time)
 for seed in SEEDS:
     seed_config = replace(config, seed=seed)
     test_accuracy = {}

@@ -1,45 +1,5 @@
-"""Curve del rumore: un punto ogni 10%, da 0 a 80, per entrambi i protocolli.
-
-Le griglie congelate hanno tre soli livelli (0, 0.25, 0.5) e la sonda
-``probe_noise80.py`` ha trovato che su BPIC20 il crollo arriva fra 0.6 e 0.8 --
-cioe' fuori da quell'intervallo. Tre punti non dicono se la caduta e' graduale o
-se c'e' una soglia: questa curva ne mette nove.
-
-Una run per livello, non una cella di griglia: serve la forma della curva, non
-la stima puntuale.
-
-I due protocolli
-----------------
-Stesso comando per entrambi: ``matrix.py --protocol {A,B}``, che misura next
-activity e suffisso nella stessa run. Il protocollo e' solo una scelta di
-config -- split, vocabolario, sorgente della conoscenza e modello di rumore.
-
-``B`` (default)
-    Split temporale, rumore sugli EVENTI, knowledge dal test.
-``A``
-    Split random, rumore sui TARGET degli esempi (le tracce restano intatte),
-    knowledge dal train. Il rumore di A e' un modello piu' debole di quello di
-    B: corrompe l'etichetta da predire, non la traccia su cui si condiziona.
-
-Fino al 21/08/2026 il protocollo A girava su ``final_matrix.py`` +
-``suffix_on_t12.py``, due stadi con un merge in mezzo. Quella strada e' stata
-abbandonata: il secondo stadio doveva RICOSTRUIRE la rete di Petri per valutare
-modelli gia' addestrati, e ``pm4py.discover_petri_net_inductive`` non e'
-riproducibile fra processi (su BPIC20 da' 21 posti quasi sempre e 22 ogni
-tanto), quindi la ricostruzione poteva non combaciare con l'addestramento --
-come e' puntualmente successo.
-
-Ogni protocollo ha la sua cartella e il suo CSV, non si mescolano mai: fra A e B
-cambiano insieme split, filtri, vocabolario, sorgente della conoscenza e modello
-di rumore, quindi i livelli non sono confrontabili.
-
-    conda activate tleaf
-    python scripts/noise_curve.py                      # protocollo B
-    python scripts/noise_curve.py --protocol A         # protocollo A
-    python scripts/noise_curve.py --report             # solo il riepilogo
-    python scripts/noise_curve.py --seeds 0 1 2        # curva con piu' repliche
-
-"""
+# Drives a whole noise curve: nine levels from 0 to 80%, one call to matrix.py
+# each, for either protocol.
 
 import argparse
 import subprocess
@@ -62,26 +22,26 @@ COLUMNS = ["accuracy", "macro_f1", "top3", "dl_similarity", "exact_match",
            "forbidden", "suffix_dfa_violation", "train_compliance",
            "corrupted", "best_epoch"]
 
-#: Chiave di una cella: identifica una run in entrambi i protocolli.
+#: Key of a cell: it identifies one run under either protocol.
 KEY = ["dataset", "arch", "variant", "noise", "seed"]
 
 
+# How the rows of a protocol are produced, and where they end up
 @dataclass(frozen=True)
 class Protocol:
-    """Come si producono le righe di un protocollo, e dove finiscono."""
 
-    #: lettera del protocollo, passata a ``matrix.py --protocol``
+    #: protocol letter, passed to ``matrix.py --protocol``
     name: str
-    #: sottocartella di ``runs/`` con il CSV del primo compito e i checkpoint
+    #: subdirectory of ``runs/`` with the first task's CSV and the checkpoints
     out_dir: str
-    #: sottocartella di ``runs/`` con il CSV del suffisso; ``None`` se il primo
-    #: script misura gia' entrambi i compiti
+    #: subdirectory of ``runs/`` with the suffix CSV; ``None`` when the first
+    #: script already measures both tasks
     suffix_dir: str | None
-    #: script che allena
+    #: the script that trains
     trainer: str
-    #: script che valuta il suffisso dai checkpoint; ``None`` se non serve
+    #: the script that scores the suffix from the checkpoints; ``None`` if unused
     suffix_scorer: str | None
-    #: descrizione per titoli e messaggi
+    #: description, for titles and messages
     label: str
 
 
@@ -113,18 +73,8 @@ PROTOCOLS = {
 }
 
 
+# The CSV the figures read
 def results_path(protocol: Protocol, out_dir: str | None = None) -> Path:
-    """Il CSV che le figure leggono.
-
-    Per B e C e' l'output diretto del trainer; per A e' il merge dei due stadi,
-    che ``merge_stages`` scrive accanto al CSV del primo compito.
-
-    ``out_dir`` scavalca la cartella del protocollo. Serve a BPIC15, che gira
-    con meno metodi e meno metriche degli altri quattro log e quindi non puo'
-    finire nello stesso CSV: righe con le stesse colonne ma con dentro celle
-    vuote per costruzione si sommano male, e chi legge il file dopo non ha modo
-    di distinguere "non misurato" da "misurato male".
-    """
 
     folder = out_dir or protocol.out_dir
     if protocol.suffix_dir is None:
@@ -152,9 +102,9 @@ def launch(protocol: Protocol, dataset, noises, archs, variants, seeds,
     if code != 0 or protocol.suffix_scorer is None:
         return code
 
-    # Stadio 2: il suffisso dai checkpoint appena scritti. ``--reference-csv``
-    # va spostato insieme a ``--ckpt-dir``, altrimenti la rete di sicurezza
-    # confronterebbe questi modelli con le righe di un'altra matrice.
+    # Stage 2: the suffix, from the checkpoints just written. ``--reference-csv``
+    # has to move together with ``--ckpt-dir``, or the safety net would compare
+    # these models against the rows of a different grid.
     stage_one = ROOT / "runs" / protocol.out_dir
     code = run([sys.executable, str(HERE / protocol.suffix_scorer),
                 *common,
@@ -167,13 +117,8 @@ def launch(protocol: Protocol, dataset, noises, archs, variants, seeds,
     return 0
 
 
+# Join the first task and the suffix on the cell key
 def merge_stages(protocol: Protocol) -> None:
-    """Unisce primo compito e suffisso sulla chiave di cella.
-
-    Le colonne che i due stadi hanno in comune (``best_epoch``, la provenienza)
-    restano quelle del primo: il secondo le riscrive ricaricando lo stesso
-    checkpoint, quindi sono ridondanti e non nuove.
-    """
 
     first = ROOT / "runs" / protocol.out_dir / "results.csv"
     second = ROOT / "runs" / protocol.suffix_dir / "results.csv"
@@ -209,8 +154,8 @@ def report(protocol: Protocol, out_dir: str | None = None) -> None:
           f"{path.relative_to(ROOT)} ({len(curve)} run)\n{'='*100}\n")
     print(curve[KEY + present].to_string(index=False))
 
-    # Ogni livello contro il livello pulito della stessa cella: il calo
-    # cumulato, che e' cio' che la curva racconta.
+    # Every level against the clean level of the same cell: the cumulative
+    # drop, which is what the curve tells.
     axis = ["dataset", "arch", "variant", "seed"]
     clean = (curve[curve.noise == 0.0]
              .set_index(axis)[["accuracy", "dl_similarity"]])
@@ -227,25 +172,25 @@ def report(protocol: Protocol, out_dir: str | None = None) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__,
+    parser = argparse.ArgumentParser(description="Noise curves: nine levels from 0 to 80%, both protocols.",
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--protocol", choices=sorted(PROTOCOLS), default="B")
-    parser.add_argument("--report", action="store_true", help="salta il lancio")
+    parser.add_argument("--report", action="store_true", help="skip the launch, print the summary only")
     parser.add_argument("--merge-only", action="store_true",
-                        help="protocollo A: rifa' solo il merge dei due stadi")
+                        help="protocol A: redo only the merge of the two stages")
     parser.add_argument("--dataset", default=DATASET)
     parser.add_argument("--noises", nargs="+", type=float, default=NOISES)
     parser.add_argument("--archs", nargs="+", default=["lstm"])
     parser.add_argument("--variants", nargs="+", default=list(VARIANTS))
     parser.add_argument("--seeds", nargs="+", type=int, default=[0])
     parser.add_argument("--out-dir",
-                        help="sottocartella di runs/ al posto di quella del "
-                             "protocollo. Serve ai log che girano con meno "
-                             "metodi degli altri, come BPIC15.")
+                        help="subdirectory of runs/ in place of the protocol's own. "
+                             "For logs that run with fewer methods than the "
+                             "others.")
     parser.add_argument("--no-net-eval", action="store_true",
-                        help="inoltrato a matrix.py: niente automa della rete, "
-                             "quindi niente colonne _net. Obbligatorio dove "
-                             "l'automa non si costruisce.")
+                        help="forwarded to matrix.py: no net automaton, therefore "
+                             "no _net columns. Required where the automaton "
+                             "cannot be built.")
     args = parser.parse_args()
 
     protocol = PROTOCOLS[args.protocol]

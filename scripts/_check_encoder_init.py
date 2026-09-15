@@ -1,4 +1,5 @@
-"""Check rapido: init di HeteroGraphEncoder (buffer, shape, parametri)."""
+# Check rapido: init di HeteroGraphEncoder (buffer, shape, parametri)
+
 import sys
 from pathlib import Path
 
@@ -32,7 +33,7 @@ out = enc(batch)
 assert out.shape == (5, 16), f"atteso (5, 16), ottenuto {tuple(out.shape)}"
 print("forward:", tuple(batch.shape), "->", tuple(out.shape))
 
-# Il gradiente deve arrivare ai Linear, non ai buffer (il grafo e' un fatto).
+# The gradient must reach the Linear layers, not the buffers (the graph is a fact).
 out.sum().backward()
 for name, param in enc.named_parameters():
     assert param.grad is not None, f"nessun gradiente su {name}"
@@ -74,7 +75,7 @@ for kind, kwargs in variants.items():
     assert logits.shape == (4, len(vocab.activities))
     print(f"{kind:13s} logits {tuple(logits.shape)}  encoder: {encoder_name}")
 
-# Il checkpoint della variante gnn deve ricostruire grafo e pesi da solo.
+# The gnn checkpoint has to rebuild both graph and weights on its own.
 ckpt = Path(tempfile.gettempdir()) / "_gnn_roundtrip.pt"
 model = build_model("gru_gnn", len(vocab.tokens), len(vocab.activities), vocab.pad_id, config.model, n_places, adjacency)
 model.eval()

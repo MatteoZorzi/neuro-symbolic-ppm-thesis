@@ -1,21 +1,4 @@
-"""Sonda — rete "oracolo" minata anche dal test (upper bound, NON un protocollo).
-
-Domanda del prof: e se la Petri net fosse minata da train E test insieme?
-Nella next-activity prediction gli eventi futuri di una traccia SONO le
-etichette, quindi una rete minata anche sul test e' costruita a partire dalle
-continuazioni che poi chiediamo di predire: e' leakage, e i numeri non sono
-confrontabili con la letteratura ne' riproducibili in esercizio.
-
-Vale pero' come DIAGNOSTICA, perche' isola l'ipotesi alternativa al nostro
-risultato negativo ("il nulla dipende da una rete povera, minata su meno
-dati"). Qui la rete oracolo e' il caso piu' generoso possibile:
-  - se i marking non aiutano NEMMENO cosi', la colpa non e' della rete;
-  - se aiutano, il guadagno misura esattamente quanta informazione arriva
-    dal futuro delle altre tracce, cioe' la dimensione del leak.
-
-Confronto: stessi seed, stessi split, stessa architettura; cambia SOLO il log
-da cui viene minata la rete. Nulla di tutto questo entra nell'esperimento.
-"""
+# Probe -- an "oracle" net mined from the test too (upper bound, NOT a protocol)
 
 import csv
 import sys
@@ -54,8 +37,8 @@ splits = TraceSplits.from_traces(traces)
 vocab = ActivityVocabulary.from_traces(splits.train.values())
 mask = build_allowed_mask(ProcessDFA.from_traces(splits.train.values()), vocab)
 
-# ------------------------------------------------------------------ le due reti
-# honest: solo train (il protocollo). oracle: train + validation + test.
+# ----------------------------------------------------------------- the two nets
+# honest: training only (the protocol). oracle: train + validation + test.
 everything = {**splits.train, **splits.validation, **splits.test}
 nets = {
     "train": PetriNet.from_traces(splits.train),
@@ -67,15 +50,15 @@ print("DIAGNOSTICA DELLE DUE RETI (test set)")
 print("=" * 70)
 
 
+# Share of test traces the replay considers fitting the net
 def fit_fraction(net: PetriNet, partition) -> float:
-    """Quota di tracce di test che il replay considera conformi alla rete."""
     event_log = net._create_event_log(partition.values())
     results = token_replay.apply(event_log, net.network, net.init_marking,
                                  net.final_marking, parameters=REPLAY_PARAMETERS)
     return sum(bool(r["trace_is_fit"]) for r in results) / len(results)
 
 
-sample = list(splits.test.items())[:30]  # il replay per prefisso e' costoso
+sample = list(splits.test.items())[:30]  # per-prefix replay is expensive
 for name, net in nets.items():
     distinct, events = [], []
     for _, trace in sample:
@@ -107,8 +90,8 @@ print("\ncostruzione dei prefissi marcati per entrambe le reti...", flush=True)
 data = {name: loaders_for(net) for name, net in nets.items()}
 
 # ------------------------------------------------------------------- training
-# resume: le celle gia' nel CSV vengono saltate (il run e' lungo e una
-# chiusura della console uccide il processo).
+# resume: cells already in the CSV are skipped (the run is long and closing
+# the console kills the process).
 done: set[tuple[str, str, int]] = set()
 if results_csv.exists():
     with results_csv.open() as handle:
@@ -155,8 +138,8 @@ for seed in SEEDS:
                   f"top-3 {eval_res.top_k_accuracy:.4f} forbidden {eval_res.forbidden_mass:.4f}",
                   flush=True)
 
-# ------------------------------------------------------------------ riepilogo
-# dal CSV completo, cosi' il riepilogo e' corretto anche dopo un resume
+# -------------------------------------------------------------------- summary
+# from the complete CSV, so the summary is right even after a resume
 with results_csv.open() as handle:
     rows = list(csv.DictReader(handle))
 accuracies: dict[tuple[str, str], dict[int, float]] = {}

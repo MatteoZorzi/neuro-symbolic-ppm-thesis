@@ -1,21 +1,4 @@
-"""Triplet training of the hierarchical embedder.
-
-Implements the embedder objective from the T-LEAF paper (Eqs. 7-8): a hinge
-triplet loss that pulls each constraint's DFA embedding ``z = q(A)`` towards the
-embeddings of its *satisfying* traces and away from its *unsatisfying* traces.
-
-    ℓ_triplet(A, w_T, w_F) = max{ d(z, z_T) − d(z, z_F) + m, 0 }
-
-with ``d`` the squared Euclidean distance, ``z_T = q(w_T)`` a satisfying trace,
-``z_F = q(w_F)`` an unsatisfying trace, and ``m`` the margin. (The paper's
-printed formula has the two distances transposed; the sign here follows the
-paper's stated intent -- anchor close to satisfying, far from unsatisfying.)
-
-The paper trains ``qe`` first and then ``qm``; for a self-contained pipeline the
-two are trained jointly end-to-end here, which the paper lists as an acceptable
-alternative. Constraint DFAs are tiny, so triplets are processed one graph at a
-time and accumulated into mini-batches before each optimiser step.
-"""
+# Triplet training of the hierarchical embedder
 
 from __future__ import annotations
 
@@ -35,9 +18,9 @@ from ..process.ltl_constraints import (
 from .embedder import HierarchicalEmbedder
 
 
+# Hyper-parameters for triplet training of the embedder
 @dataclass(frozen=True)
 class EmbedderConfig:
-    """Hyper-parameters for triplet training of the embedder."""
 
     epochs: int = 5
     learning_rate: float = 1e-3
@@ -58,13 +41,13 @@ class Triplet:
     unsatisfying: tuple[str, ...]
 
 
+# Synthesize satisfying/unsatisfying trace pairs for every constraint
 def build_triplets(
     constraints: Sequence[PrecedenceConstraint],
     alphabet: Sequence[str],
     config: EmbedderConfig,
     rng: random.Random,
 ) -> list[Triplet]:
-    """Synthesize satisfying/unsatisfying trace pairs for every constraint."""
 
     triplets: list[Triplet] = []
     for constraint in constraints:
@@ -91,6 +74,7 @@ def _triplet_distances(
     return d_pos, d_neg
 
 
+# Jointly train ``qe`` and ``qm`` with the triplet hinge loss
 def train_embedder(
     embedder: HierarchicalEmbedder,
     space: FeatureSpace,
@@ -101,7 +85,6 @@ def train_embedder(
     device: torch.device | str = "cpu",
     verbose: bool = True,
 ) -> pd.DataFrame:
-    """Jointly train ``qe`` and ``qm`` with the triplet hinge loss."""
 
     config = config or EmbedderConfig()
     if not constraints:
@@ -155,6 +138,7 @@ def train_embedder(
     return pd.DataFrame(history)
 
 
+# Fraction of held-out triplets ranked correctly (d_pos < d_neg)
 @torch.no_grad()
 def evaluate_embedder(
     embedder: HierarchicalEmbedder,
@@ -165,7 +149,6 @@ def evaluate_embedder(
     *,
     device: torch.device | str = "cpu",
 ) -> float:
-    """Fraction of held-out triplets ranked correctly (d_pos < d_neg)."""
 
     config = config or EmbedderConfig()
     rng = random.Random(config.seed + 1)

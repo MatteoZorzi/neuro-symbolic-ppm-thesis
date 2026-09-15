@@ -1,9 +1,4 @@
-"""Oracolo end-to-end del gradino 4 (kind *_seq) su dati veri.
-
-Verifica la catena completa: build_model -> symbolic_input -> forward ->
-backward -> checkpoint roundtrip, piu' le guardie che devono scattare quando
-il modello sequenziale riceve dati della famiglia sbagliata.
-"""
+# Oracolo end-to-end del gradino 4 (kind *_seq) su dati veri
 
 import sys
 from pathlib import Path

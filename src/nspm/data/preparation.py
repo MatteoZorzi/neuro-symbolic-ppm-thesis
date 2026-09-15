@@ -409,33 +409,19 @@ class PrefixLog:
         vocab_tokes = self.vocabulary.tokens
         prefixes = [[vocab_tokes[token_id] for token_id in example.token_ids[1:]]
                     for example in self.examples]
-        # Il replay e' il costo dominante della costruzione di un log, e i
-        # prefissi sono indipendenti: ``prefix_markings`` li distribuisce sui
-        # core. Con pochi prefissi, o con un solo worker, ricade da sola sul
-        # percorso seriale di ``prefix_marking``, quindi i valori sono gli stessi
-        # in ogni caso.
+        # Replay is the dominant cost of building a log, and the prefixes are
+        # independent: ``prefix_markings`` spreads them over the cores. With few
+        # prefixes, or with a single worker, it falls back on its own to the
+        # serial path of ``prefix_marking``, so the values are the same either
+        # way.
         markings = petrinet.prefix_markings(prefixes)
         markings_log = [replace(example, marking=marking)
                         for example, marking in zip(self.examples, markings)]
 
         return PrefixLog(tuple(markings_log), self.vocabulary)
 
+    # Attach the automaton state each prefix reaches, for a state-aware loss
     def with_automaton_states(self, automaton) -> PrefixLog:
-        """Attach the automaton state each prefix reaches, for a state-aware loss.
-
-        The Petri-net reachability automaton distinguishes contexts that the
-        directly-follows view collapses: the same last activity can leave the
-        net in different markings, with different legal continuations. Indexing
-        a constraint mask by *this* state instead of by the last token is what
-        lets a loss use the net's memory. Replaying is cheap -- following edges
-        in a deterministic automaton, not token replay on the net.
-
-        A prefix that leaves the automaton's alphabet (no edge at all) is mapped
-        to the trap state when there is one, otherwise to the initial state; the
-        automaton built by :meth:`ReachabilityAutomaton.from_petri_net` with the
-        full vocabulary as ``alphabet`` is complete, so this is a guard, not a
-        path that normally runs.
-        """
         tokens = self.vocabulary.tokens
         fallback = automaton.trap_state if automaton.trap_state is not None else automaton.init_state
         stated: list[PrefixExample] = []
@@ -461,9 +447,9 @@ class PrefixLog:
         for example in self.examples:
             longest[example.case_id] = example
 
-        # Una sequenza chiede il marking di ogni prefisso del suo caso. Quando
-        # questa passata segue ``with_markings`` sono tutti gia' in cache; quando
-        # non la segue, questo li calcola in parallelo invece che in serie.
+        # A sequence asks for the marking of every prefix of its case. When this
+        # pass follows ``with_markings`` they are all cached already; when it
+        # does not, this computes them in parallel instead of one by one.
         petrinet.prefix_markings(
             [prefix[:length]
              for example in longest.values()

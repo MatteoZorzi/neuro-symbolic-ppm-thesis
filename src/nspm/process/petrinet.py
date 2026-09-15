@@ -22,31 +22,19 @@ REPLAY_PARAMETERS = {
     _REPLAY_PARAM.SHOW_PROGRESS_BAR: False
 }
 
-#: Sotto questa soglia il pool costa piu' di quanto rende: su Windows ogni
-#: worker parte con ``spawn`` e rifa' l'import di pm4py, che sono secondi.
+#: Below this threshold the pool costs more than it returns: on Windows every
+#: worker starts with ``spawn`` and re-imports pm4py, which takes seconds.
 PARALLEL_THRESHOLD = 2000
 
-#: Prefissi per task. Serve solo ad ammortizzare il costo di IPC: dentro il
-#: task i prefissi vengono comunque rigiocati UNO PER UNO (vedi
-#: ``_replay_chunk``), quindi la dimensione non cambia i valori. Misurata
-#: irrilevante fra 4 e 64; 64 tiene basso il numero di round-trip senza
-#: sbilanciare il carico fra i worker.
+#: Prefixes per task. It only amortises the cost of IPC: inside the task the
+#: prefixes are replayed ONE BY ONE anyway (see ``_replay_chunk``), so the size
+#: does not change the values. Measured irrelevant between 4 and 64; 64 keeps
+#: the number of round-trips low without unbalancing the load.
 CHUNK_SIZE = 64
 
 
+# How many processes to use for the replay
 def replay_workers(workers: int | None = None) -> int:
-    """Quanti processi usare per il replay.
-
-    Default: i core FISICI, cioe' meta' di quelli logici su una CPU con SMT.
-    Non e' prudenza, e' misura: su un 7700X (8 core, 16 thread) e su 11k
-    prefissi di BPIC15, 8 worker fanno 2.7x contro il seriale e 15 ne fanno
-    1.8x. I sibling SMT si contendono le stesse unita' di esecuzione e il
-    replay non ha abbastanza stalli di memoria da coprire lo scambio, per cui
-    riempire i thread logici fa perdere tempo invece che guadagnarne.
-
-    ``NSPM_REPLAY_WORKERS`` forza il valore; 1 disattiva il parallelismo e
-    riporta il comportamento a quello seriale.
-    """
 
     if workers is not None:
         return max(1, workers)
@@ -56,8 +44,8 @@ def replay_workers(workers: int | None = None) -> int:
     return max(1, (os.cpu_count() or 2) // 2)
 
 
-#: Stato per-worker. La rete arriva una volta sola all'avvio del processo
-#: (50 KB, un millisecondo) invece che a ogni task.
+#: Per-worker state. The net arrives once at process start-up (50 KB, one
+#: millisecond) instead of with every task.
 _WORKER: dict = {}
 
 
@@ -66,20 +54,14 @@ def _init_replay_worker(payload) -> None:
     _WORKER["network"] = network
     _WORKER["init"] = init_marking
     _WORKER["final"] = final_marking
-    # I Place sopravvivono al pickle come gli stessi oggetti che stanno dentro
-    # la rete, perche' vengono serializzati insieme a lei: l'indice resta valido.
+    # Places survive the pickle as the same objects that live inside the net,
+    # because they are serialised along with it: the index stays valid.
     _WORKER["index"] = {place: position for position, place in enumerate(places)}
     _WORKER["size"] = len(places)
 
 
+# Replay a chunk of prefixes, ONE PER CALL
 def _replay_chunk(prefixes: Sequence[tuple[str, ...]]) -> list[tuple[int, ...]]:
-    """Rigioca un blocco di prefissi, UNO PER CHIAMATA.
-
-    Il blocco non diventa un unico ``EventLog``: pm4py condivide delle cache fra
-    le tracce di una stessa ``apply``, quindi rigiocare n prefissi insieme da'
-    marking diversi dal rigiocarli separatamente. Il blocco serve solo a non
-    pagare un round-trip di IPC per prefisso.
-    """
 
     network, init = _WORKER["network"], _WORKER["init"]
     final, index, size = _WORKER["final"], _WORKER["index"], _WORKER["size"]
@@ -95,35 +77,26 @@ def _replay_chunk(prefixes: Sequence[tuple[str, ...]]) -> list[tuple[int, ...]]:
         markings.append(tuple(vector))
     return markings
 
-#: Limite di ricorsione per la sola scoperta, e stack del thread che la ospita.
-#: L'inductive miner di pm4py e' ricorsivo -- taglia il log, ricorre sui pezzi,
-#: e alla fine fa un ``deepcopy`` dell'albero, che ricorre a sua volta. Su BPIC15
-#: sotto il protocollo A l'albero e' profondo abbastanza da sfondare il limite di
-#: default (1000) e il processo muore con ``RecursionError`` prima di scrivere
-#: una riga. Sotto B non capitava perche' li' la knowledge viene dal test, che e'
-#: un quarto delle tracce.
+#: Recursion limit for discovery alone, and the stack of the thread hosting it.
+#: The pm4py inductive miner is recursive -- it cuts the log, recurses on the
+#: pieces, and ends with a ``deepcopy`` of the tree, which recurses in turn. On
+#: BPIC15 under protocol A the tree is deep enough to break the default limit
+#: (1000) and the process dies with ``RecursionError`` before writing a row.
+#: Under B it did not happen, because there the knowledge comes from the test
+#: partition, a quarter of the traces.
 #:
-#: Le taglie si provano in ordine e si tiene la prima accettata: il massimo non
-#: e' lo stesso ovunque -- Linux prende 256 MB, Windows li rifiuta con
-#: ``ValueError``. Lo zero finale e' il default del sistema, cioe' nessun
-#: aumento: se si arriva li' il ``RecursionError`` puo' tornare, ma almeno e'
-#: un'eccezione leggibile e non un thread che non parte.
+#: The sizes are tried in order and the first accepted one is kept: the maximum
+#: is not the same everywhere -- Linux takes 256 MB, Windows refuses it with
+#: ``ValueError``. The trailing zero is the system default, that is no increase:
+#: if it gets that far the ``RecursionError`` can come back, but at least it is
+#: a readable exception and not a thread that fails to start.
 _DISCOVERY_RECURSION_LIMIT = 50_000
 _DISCOVERY_STACK_SIZES = (256 * 1024 * 1024, 128 * 1024 * 1024,
                           64 * 1024 * 1024, 32 * 1024 * 1024, 0)
 
 
+# ``discover_petri_net_inductive`` with enough stack to finish
 def _discover_inductive(event_log, noise_threshold: float):
-    """``discover_petri_net_inductive`` con abbastanza stack per finire.
-
-    Alzare ``sys.setrecursionlimit`` da solo non basta e anzi peggiora: il limite
-    e' un conto di frame Python, ma lo stack vero e' quello del sistema, e
-    superarlo non da' un'eccezione, da' un segfault. Per questo la scoperta gira
-    in un thread creato con uno stack esplicito.
-
-    Non e' un'approssimazione: stessa chiamata, stessi parametri, stessa rete.
-    Cambia solo quanto spazio ha per arrivare in fondo.
-    """
 
     outcome: dict = {}
 
@@ -133,8 +106,8 @@ def _discover_inductive(event_log, noise_threshold: float):
         try:
             outcome["net"] = pm4py.discover_petri_net_inductive(
                 event_log, noise_threshold=noise_threshold)
-        except BaseException as error:          # rilanciata nel chiamante: senza
-            outcome["error"] = error            # questo il thread morirebbe muto
+        except BaseException as error:          # re-raised in the caller: without
+            outcome["error"] = error            # this the thread would die mute
         finally:
             sys.setrecursionlimit(previous_limit)
 
@@ -165,12 +138,12 @@ class PetriNet:
     final_marking: Marking
     places: tuple[Pm4pyNet.Place, ...]
     transitions: tuple[Pm4pyNet.Transition, ...]
-    #: Memoizzazione di ``prefix_marking``. E' una funzione pura del prefisso --
-    #: la rete non cambia -- e i prefissi si ripetono parecchio: 4x su BPIC12,
-    #: 119x su BPIC20. Senza cache lo stesso marking viene rigiocato una volta
-    #: per ``with_markings`` e una per ``with_marking_sequences``, che chiedono
-    #: esattamente le stesse chiavi. Non e' un'approssimazione: i valori escono
-    #: identici, cambia solo quante volte si chiama pm4py.
+    #: Memoization of ``prefix_marking``. It is a pure function of the prefix --
+    #: the net does not change -- and prefixes repeat a great deal: 4x on BPIC12,
+    #: 119x on BPIC20. Without the cache the same marking is replayed once for
+    #: ``with_markings`` and once for ``with_marking_sequences``, which ask for
+    #: exactly the same keys. This is not an approximation: the values come out
+    #: identical, only the number of calls to pm4py changes.
     _marking_cache: dict[tuple[str, ...], tuple[int, ...]] = field(
         default_factory=dict, compare=False, repr=False
     )
@@ -204,22 +177,10 @@ class PetriNet:
         self._marking_cache[key] = marking
         return marking
 
+    # Controparte parallela di :meth:`prefix_marking`, su molti prefissi
     def prefix_markings(self, prefixes: Iterable[Sequence[str]],
                         workers: int | None = None,
                         chunk_size: int = CHUNK_SIZE) -> list[tuple[int, ...]]:
-        """Controparte parallela di :meth:`prefix_marking`, su molti prefissi.
-
-        Stessa semantica, un processo per core invece che uno solo. Il replay e'
-        Python puro, quindi i thread non servirebbero a niente: il GIL li
-        serializzerebbe. I prefissi sono pero' indipendenti fra loro --
-        ``prefix_marking`` e' una funzione pura e ogni chiamata a pm4py e'
-        isolata -- per cui distribuirli su piu' processi da' gli stessi valori
-        per costruzione.
-
-        Riempie la stessa cache di ``prefix_marking``, quindi chiamarla prima di
-        una passata seriale rende quella passata una sequenza di hit. Restituisce
-        i marking nell'ordine dei prefissi ricevuti, duplicati compresi.
-        """
 
         keys = [tuple(prefix) for prefix in prefixes]
         pending, seen = [], set()
@@ -246,16 +207,8 @@ class PetriNet:
 
         return [self._marking_cache[key] for key in keys]
 
+    # Token-based-replay fitness of whole traces against this net
     def trace_fitness(self, traces: Iterable[Sequence[str]]) -> list[float]:
-        """Token-based-replay fitness of whole traces against this net.
-
-        Diverso da :meth:`prefix_marking` per intento: li' il replay produce una
-        *feature* e ogni prefisso va rigiocato isolato, qui produce una *metrica*
-        su tracce complete, quindi una sola chiamata su tutto il log va bene ed
-        e' la forma prevista dall'API pm4py. Il valore e' la ``trace_fitness``
-        del replay: 1.0 se la traccia si rigioca senza token mancanti ne'
-        residui, 0.0 per una traccia vuota o del tutto fuori modello.
-        """
 
         traces = list(traces)
         if not traces:
@@ -263,10 +216,10 @@ class PetriNet:
         diagnostics = pm4py.conformance_diagnostics_token_based_replay(
             self._create_event_log(traces), self.network,
             self.init_marking, self.final_marking,
-            # Stessa configurazione del replay che produce i marking: attraversa
-            # le transizioni invisibili e non si ferma al primo disallineamento.
-            # Se la fitness usasse un'altra configurazione misurerebbe una rete
-            # diversa da quella che il resto della tesi descrive.
+            # The same replay configuration that produces the markings: it
+            # crosses invisible transitions and does not stop at the first
+            # mismatch. A different configuration here would measure a different
+            # net from the one the rest of the thesis describes.
             opt_parameters=dict(REPLAY_PARAMETERS),
         )
         return [float(entry["trace_fitness"]) for entry in diagnostics]

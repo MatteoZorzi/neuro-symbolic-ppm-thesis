@@ -1,17 +1,5 @@
-"""Oracle for PetriNet.marking_sequence (Step 3, increment 1).
+# Oracle for PetriNet.marking_sequence (Step 3, increment 1)
 
-Properties checked (implementation-independent, so this script stays the
-judge if the method is later optimized to incremental replay):
-1. one marking per event: len(seq) == len(prefix);
-2. last element == prefix_marking(prefix) (the static rung sees exactly
-   the last element of what the sequential rung sees);
-3. element i == prefix_marking(prefix[:i+1]) for every i;
-4. nested-prefix slicing: marking_sequence(t[:k]) == marking_sequence(t)[:k]
-   (the property increment 2 relies on: one sequence per trace, sliced);
-5. empty prefix -> empty tuple;
-6. well-formed elements (26 ints, >= 1 token) and deterministic;
-7. the sequence actually evolves (not all steps identical).
-"""
 import sys
 import time
 from pathlib import Path

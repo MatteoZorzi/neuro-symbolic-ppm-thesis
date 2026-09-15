@@ -1,22 +1,4 @@
-"""T10 — Label noise sulla branch marking (domanda del prof).
-
-Grid: 3 modelli (gru / gru_marking / gru_gnn) x 3 livelli di corruzione
-delle etichette di TRAIN (0%, 25%, 50%) x 10 seed. Val e test restano
-PULITI (convenzione di pipeline/benchmark.py): la corruzione tocca solo
-i target y degli esempi, mai le tracce -> la Petri net, i marking e il
-DFA non cambiano (scoperti sulle sequenze, che restano vere).
-
-Domanda: il vantaggio di conformita' del marking (forbidden mass giu'
-5/5 seed senza mai essere ottimizzata) sopravvive quando la supervisione
-degrada? Il marking e' un input simbolico NON corrotto dal label noise.
-
-Disciplina twin-run: dentro una cella (seed, noise) i tre modelli vedono
-le STESSE etichette corrotte (stesso RNG seed -> stessi indici, stessi
-nuovi target), quindi ogni delta isola il solo encoder.
-
-Risultati appesi riga per riga a runs/_t10_noise_grid/results.csv, cosi'
-un'interruzione non butta via i run completati.
-"""
+# T10 — Label noise sulla branch marking (domanda del prof)
 
 import csv
 import random
@@ -55,17 +37,17 @@ config = ExperimentConfig()
 events = read_log(log_path)
 splits = build_splits(events, config)
 
-# artefatti simbolici dalla partizione indicata da ``knowledge_source`` (train
-# di default); il label noise non tocca le tracce, quindi rete/DFA/marking
-# restano identici a tutti i livelli di corruzione
+# symbolic artifacts from the partition named by ``knowledge_source`` (training
+# by default); label noise does not touch the traces, so net, DFA and markings
+# stay identical at every level of corruption
 vocab = build_vocabulary(splits, config)
 knowledge = knowledge_traces(splits, config)
 petrinet = PetriNet.from_traces(knowledge)
 automaton = ProcessDFA.from_traces(knowledge.values())
 mask = build_allowed_mask(automaton, vocab)
 
-# log base costruiti UNA volta (with_markings costa ~35s); la corruzione
-# per cella e' cheap e preserva i marking (replace tocca solo target_id)
+# base logs built ONCE (with_markings costs ~35s); per-cell corruption is cheap
+# and preserves the markings (replace touches only target_id)
 train_plain = PrefixLog.from_traces(splits.train, vocab)
 train_marked = train_plain.with_markings(petrinet)
 loaders_clean = {
@@ -96,7 +78,7 @@ for seed in SEEDS:
     seed_config = replace(config, seed=seed)
     for noise in NOISES:
         for name in MODELS:
-            # stesso RNG seed per i tre modelli -> stesse etichette corrotte
+            # same RNG seed for the three models -> same corrupted labels
             rng = random.Random(seed + int(noise * 1000))
             corrupted_log, changed = train_base[name].corrupt_targets(noise, rng)
             train_loader = corrupted_log.data_loader(config.data.batch_size, shuffle=True)

@@ -1,28 +1,5 @@
-"""Draw the training-cost figure of \\cref{subsec:res-cost}.
+# Draw the training-cost figure of \cref{subsec:res-cost}
 
-Cost does not belong on the noise axis. The time an epoch takes has no trend
-against the corruption of the labels: inside one cell the nine levels spread by
-between 5\\% and 40\\%, with no direction. So the figure drops that axis and asks
-the question the noise curves cannot: what does the time buy.
-
-Every model is one point. The horizontal position is the time of one epoch
-against the baseline of the same log, and the vertical one is how much of the
-baseline's non-conformance it removes -- filled on the next activity, hollow on
-the generated suffix, joined by a segment because the two are the same model
-measured on two tasks. A model in the upper left pays nothing and moves both;
-one on the right had better be high, and the marking sequence is not.
-
-The eight bars this figure used to carry are now \\cref{tab:res-cost}. Eight
-bars of which six end at 1.00 are a table drawn badly, and the seconds
-themselves -- 1.4 on Sepsis against 20.7 on BPIC 2012 -- a ratio cannot show.
-
-``secs_per_epoch`` is the cost, and ``secs_train`` is not: early stopping fires
-at different epochs, so the wall time of a run mixes what a method costs with
-how quickly it converges. Both are in the table, and only the first is an axis
-here.
-
-    python official_experiments/scripts/cost_figure.py
-"""
 from __future__ import annotations
 
 import argparse
@@ -80,25 +57,15 @@ STYLE = {
 }
 
 
+# Time of one epoch against the baseline, median over log and protocol
 def cost(grid: pd.DataFrame) -> pd.Series:
-    """Time of one epoch against the baseline, median over log and protocol.
-
-    The ratio is taken inside the log, never across it: an epoch of BPIC 2012 is
-    fifteen of Sepsis, and only the proportion carries over.
-    """
     epoch = (grid.groupby(["protocol", "dataset", "variant"], observed=True)
              ["secs_per_epoch"].median().unstack("variant"))[list(VARIANTS)]
     return epoch.div(epoch["baseline"], axis=0).median()
 
 
+# Percent of the baseline's ``metric`` that a model removes
 def removed(grid: pd.DataFrame, metric: str) -> pd.Series:
-    """Percent of the baseline's ``metric`` that a model removes.
-
-    The same aggregation as \\cref{tab:res-summary}: median over the ten seeds
-    inside the cell, difference against the baseline of that cell, then the mean
-    of the thirty-six differences over the mean of the thirty-six baselines. The
-    sign is flipped so that up is better on a metric where less is better.
-    """
     cells = (grid.groupby(["protocol", "dataset", "noise", "variant"],
                           observed=True)[metric].median().unstack("variant"))
     panel = cells.xs(PROTOCOL, level="protocol")
@@ -160,7 +127,8 @@ def draw(grid: pd.DataFrame, path: Path) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description="Draw the training-cost figure of the results chapter.")
     parser.add_argument("--out", type=Path, default=FIGURES)
     parser.add_argument("--no-thesis-copy", action="store_true",
                         help="do not mirror the figure into the thesis")

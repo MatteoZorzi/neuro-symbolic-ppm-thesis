@@ -1,4 +1,4 @@
-"""Sequence models for next-activity prediction, with checkpoint save/load."""
+# Sequence models for next-activity prediction, with checkpoint save/load
 
 from __future__ import annotations
 
@@ -24,22 +24,17 @@ ModelKind = Literal["gru", "gru_marking", "gru_gnn", "gru_seq", "gru_grnn",
 GRAPH_SUFFIXES = ("_gnn", "_seq", "_grnn")
 
 
+# Shared embedding and classification logic for recurrent encoders
 class _NextActivityRecurrent(nn.Module):
-    """Shared embedding and classification logic for recurrent encoders.
-
-    The marking variants differ only in the injected ``marking_encoder``
-    (flat identity or graph message passing): it maps the marking to a
-    feature vector concatenated to the final recurrent state.
-    """
 
     recurrent_type: type[nn.RNNBase]
 
     def __init__(self, vocabulary_size: int, number_of_classes: int, pad_id: int, config: ModelConfig, marking_encoder: nn.Module | None = None) -> None:
         super().__init__()
         self.embedding = nn.Embedding(vocabulary_size, config.embedding_dim, padding_idx=pad_id)
-        # ``dropout`` di torch agisce FRA gli strati, quindi con un solo strato
-        # non fa niente e in cambio stampa un warning a ogni costruzione. Quello
-        # sull'ultimo stato resta ``self.dropout``, che c'e' in tutti i casi.
+        # Torch's ``dropout`` acts BETWEEN layers, so with a single layer it
+        # does nothing and prints a warning at every construction in exchange.
+        # Dropout on the final state stays ``self.dropout``, which is always on.
         self.recurrent = self.recurrent_type(
             input_size=config.embedding_dim, hidden_size=config.hidden_dim,
             num_layers=config.recurrent_layers, batch_first=True,
@@ -49,8 +44,8 @@ class _NextActivityRecurrent(nn.Module):
         extra_dim = marking_encoder.output_dim if marking_encoder is not None else 0
         self.classifier = nn.Linear(config.hidden_dim + extra_dim, number_of_classes)
 
+    # Encode each prefix and return unnormalised next-action scores
     def forward(self, tokens: torch.Tensor, lengths: torch.Tensor, markings: torch.Tensor | None = None) -> torch.Tensor:
-        """Encode each prefix and return unnormalised next-action scores."""
 
         embedded = self.embedding(tokens)
         # Packing ensures that padding cannot alter the final recurrent state.
@@ -67,14 +62,8 @@ class _NextActivityRecurrent(nn.Module):
 
         return self.classifier(self.dropout(final_hidden))
 
+    # Like :meth:`forward`, but it also returns the recurrent state
     def encode(self, tokens: torch.Tensor, lengths: torch.Tensor):
-        """Come :meth:`forward`, ma restituisce anche lo stato ricorrente.
-
-        Serve a chi deve *proseguire* da un prefisso invece che fermarsi alla
-        prima predizione: la loss globale genera passo per passo e ha bisogno di
-        riprendere la ricorrenza da dove il prefisso l'ha lasciata, senza
-        rileggerlo da capo a ogni passo.
-        """
 
         if self.marking_encoder is not None:
             raise ValueError(
@@ -89,19 +78,8 @@ class _NextActivityRecurrent(nn.Module):
         state = hidden[0] if isinstance(hidden, tuple) else hidden
         return self.classifier(self.dropout(state[-1])), hidden
 
+    # One recurrence step starting from a *soft* choice of activity
     def forward_from_state(self, activity_weights: torch.Tensor, hidden):
-        """Un passo di ricorrenza a partire da una scelta *morbida* di attivita'.
-
-        ``activity_weights`` e' una distribuzione sulle classi, non un indice, ed
-        e' questo che tiene il rollout differenziabile: l'embedding del passo e'
-        la combinazione convessa degli embedding delle attivita', quindi il
-        gradiente risale fino ai logit che l'hanno prodotta. Con un ``argmax`` la
-        catena si spezzerebbe qui.
-
-        Le classi sono le sole attivita', i token di input hanno davanti ``PAD``
-        e ``START``: l'offset si ricava dalle due dimensioni invece di cablarlo,
-        cosi' se il vocabolario cambia forma questo non mente in silenzio.
-        """
 
         offset = self.embedding.num_embeddings - self.classifier.out_features
         activity_embeddings = self.embedding.weight[offset:]
@@ -109,12 +87,8 @@ class _NextActivityRecurrent(nn.Module):
         output, hidden = self.recurrent(embedded, hidden)
         return self.classifier(self.dropout(output[:, -1])), hidden
 
+# Identity feature map: the raw marking is the feature vector
 class FlatMarkingEncoder(nn.Module):
-    """Identity feature map: the raw marking is the feature vector.
-
-    Ablation rung 2 ("state without structure"): same interface as
-    :class:`HeteroGraphEncoder` so the two are interchangeable.
-    """
 
     expects_sequences = False
 
@@ -126,18 +100,8 @@ class FlatMarkingEncoder(nn.Module):
         return markings.float()
 
 
+# The net's graph and the message-passing pieces shared by rungs 4-6
 class _PetriGraphEncoder(nn.Module):
-    """The net's graph and the message-passing pieces shared by rungs 4-6.
-
-    Holds the adjacencies (buffers, no gradient), the projection from token
-    counts to node features, one P->T->P hop parametrised on the two
-    ``Linear`` layers it should use, and the readout. Subclasses differ only
-    in *how many* hops they own and in where they put the recurrence.
-
-    The parameter names of :class:`HeteroGraphEncoder` deliberately stay where
-    they were -- ``state_dict`` keys follow attribute paths, so moving the
-    buffers and ``place_input`` up here leaves checkpoints loadable.
-    """
 
     a_pt_t: torch.Tensor
     a_tp_t: torch.Tensor
@@ -152,41 +116,28 @@ class _PetriGraphEncoder(nn.Module):
         self.place_input = nn.Linear(1, hidden_dim)
         self.output_dim: int = hidden_dim
 
+    # Token counts to node features: ``(..., P)`` -> ``(..., P, H)``
     def project(self, markings: torch.Tensor) -> torch.Tensor:
-        """Token counts to node features: ``(..., P)`` -> ``(..., P, H)``."""
 
         return self.place_input(markings.float().unsqueeze(-1)).relu()
 
+    # One P->T->P step with the given per-relation weights
     def hop(self, place_states: torch.Tensor, to_transition: nn.Linear, to_place: nn.Linear) -> torch.Tensor:
-        """One P->T->P step with the given per-relation weights.
-
-        The adjacency products broadcast over every axis left of the place
-        one, so the same code serves ``(B, P, H)`` and ``(B, L, P, H)``.
-        """
 
         transition_states = matmul(self.a_pt_t, place_states)
         transition_states = to_transition(transition_states).relu()
         place_states = matmul(self.a_tp_t, transition_states)
         return to_place(place_states).relu()
 
+    # Max over the place axis, indexed from the right so a time axis is fine
     @staticmethod
     def readout(place_states: torch.Tensor) -> torch.Tensor:
-        """Max over the place axis, indexed from the right so a time axis is fine."""
 
         return place_states.max(dim=-2).values
 
 
+# Two-hop message passing on the bipartite place/transition graph
 class HeteroGraphEncoder(_PetriGraphEncoder):
-    """
-    Two-hop message passing on the bipartite place/transition graph.
-    Heterogeneous: the place->transition and transition->place relations
-    have separate weights. Readout: max over places.
-
-    Ablation rung 3 ("structure without time"): consumes one marking per
-    prefix, ``(B, P)``. The readout indexes the place axis from the right
-    so the same code also serves the sequential subclass, whose markings
-    carry an extra time axis.
-    """
 
     def __init__(self, a_pt: AdjacencyMatrix, a_tp: AdjacencyMatrix, hidden_dim: int) -> None:
         super().__init__(a_pt, a_tp, hidden_dim)
@@ -217,35 +168,14 @@ class MarkingSequenceEncoder(HeteroGraphEncoder):
         _, hidden = self.recurrent(packed)
         return hidden[-1]
 
+# The two per-relation maps of one P->T->P hop
 def _hop_weights(hidden_dim: int) -> tuple[nn.Linear, nn.Linear]:
-    """The two per-relation maps of one P->T->P hop."""
 
     return nn.Linear(hidden_dim, hidden_dim), nn.Linear(hidden_dim, hidden_dim)
 
 
+# TACO's GRNN (Eq. 6): graph convolutions *inside* the GRU gates
 class GraphRecurrentEncoder(_PetriGraphEncoder):
-    """TACO's GRNN (Eq. 6): graph convolutions *inside* the GRU gates.
-
-    Ablation rung 6. Rung 5 reads each step out to a vector and only then
-    recurs, so structure and time never mix inside the recurrence. Here the
-    hidden state stays **per place**, ``(B, P, H)``, and every linear map of
-    the GRU becomes a P->T->P hop::
-
-        z_t = sigmoid( G_zx(x_t) + G_zh(h_{t-1}) + b_z )
-        r_t = sigmoid( G_rx(x_t) + G_rh(h_{t-1}) + b_r )
-        n_t = tanh(    G_nx(x_t) + r_t * G_nh(h_{t-1}) + b_n )
-        h_t = z_t * h_{t-1} + (1 - z_t) * n_t
-
-    Six hops, as in the paper: three gates times two arguments. The three
-    input-side ones do not depend on the hidden state, so they run once over
-    the whole padded sequence and only the three state-side ones sit inside
-    the loop -- identical arithmetic, half the sequential work.
-
-    Deliberately *unlike* TACO in one respect, and it is the one that keeps
-    the ladder honest: the adjacency products stay unnormalised, exactly as
-    in rungs 4-5, so the 6-5 delta isolates the recurrence and nothing else.
-    The paper's ``D^-1 A`` stays a declared divergence (``MODELS.md`` 9.2).
-    """
 
     expects_sequences = True
 
@@ -299,18 +229,19 @@ class GraphRecurrentEncoder(_PetriGraphEncoder):
         return self.readout(hidden)
 
 
+# GRU classifier used as the compact recurrent baseline
 class NextActivityGRU(_NextActivityRecurrent):
-    """GRU classifier used as the compact recurrent baseline."""
 
     recurrent_type = nn.GRU
 
 
+# LSTM classifier with an explicit memory cell for longer dependencies
 class  NextActivityLSTM(_NextActivityRecurrent):
-    """LSTM classifier with an explicit memory cell for longer dependencies."""
 
     recurrent_type = nn.LSTM
 
 
+# Construct a sequence model from a validated symbolic name
 def build_model(
     kind: ModelKind,
     vocabulary_size: int,
@@ -320,7 +251,6 @@ def build_model(
     marking_dim: int = 0,
     adjacency: tuple[AdjacencyMatrix, AdjacencyMatrix] | None = None,
 ) -> nn.Module:
-    """Construct a sequence model from a validated symbolic name."""
 
     model_types: dict[str, type[nn.Module]] = {
         "gru": NextActivityGRU,
@@ -358,14 +288,8 @@ def build_model(
     return model_type(vocabulary_size, number_of_classes, pad_id, config, marking_encoder)
 
 
+# The symbolic stream the model's encoder expects, or None if it has none
 def symbolic_input(model: nn.Module, batch) -> torch.Tensor | None:
-    """The symbolic stream the model's encoder expects, or None if it has none.
-
-    Both streams travel in the batch, so the choice belongs to the encoder
-    that declares its need, not to the call site: a log carrying marking
-    sequences also carries the static snapshots, and picking "whichever is
-    present" would silently feed histories to the static variants.
-    """
 
     encoder = getattr(model, "marking_encoder", None)
     if encoder is None:
@@ -382,6 +306,7 @@ def symbolic_input(model: nn.Module, batch) -> torch.Tensor | None:
 
 # -------------------------------------------------------------------- checkpoints
 
+# Save enough metadata to reconstruct the trained model
 def save_checkpoint(
     path: Path,
     model: nn.Module,
@@ -392,7 +317,6 @@ def save_checkpoint(
     best_epoch: int,
     stopped_early: bool,
 ) -> None:
-    """Save enough metadata to reconstruct the trained model."""
 
     # Recover what build_model needs from the injected encoder: the flat
     # variant only knows its width, the GNN carries the graph in its buffers.
@@ -425,10 +349,10 @@ def save_checkpoint(
     )
 
 
+# Load a checkpoint created by :func:`save_checkpoint`
 def load_checkpoint(
     path: str | Path, device: str | torch.device = "cpu"
 ) -> tuple[nn.Module, ActivityVocabulary, dict[str, object]]:
-    """Load a checkpoint created by :func:`save_checkpoint`."""
 
     payload = torch.load(Path(path), map_location=device, weights_only=False)
     vocabulary = ActivityVocabulary(tuple(payload["activities"]))

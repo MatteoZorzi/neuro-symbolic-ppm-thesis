@@ -1,13 +1,5 @@
-"""Executable correctness checks for the symbolic core (T5 review evidence).
+# Executable correctness checks for the symbolic core (T5 review evidence)
 
-1. Property test: PrecedenceConstraint.is_satisfied(trace) == to_dfa().accepts(trace)
-   on thousands of random traces (the DFA-vs-LTLf-semantics equivalence).
-2. build_allowed_mask: PAD row all-true, forbidden transition masked, START row valid.
-3. corrupt_targets: exact count, always-changed labels, prefixes untouched.
-4. split_traces: partitions disjoint by case id and complete.
-5. Vocabulary round-trip: encode_prefix then decode is identity.
-6. Mined constraints hold on the traces they were mined from (confidence=1.0 rules).
-"""
 import random
 import sys
 from pathlib import Path

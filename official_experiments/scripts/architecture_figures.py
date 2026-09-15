@@ -1,37 +1,5 @@
-"""Draw the three architecture figures of the thesis from the code that ran.
+# Draw the three architecture figures of the thesis from the code that ran
 
-These are structure figures, not data figures: they say where the symbolic
-knowledge enters each of the eight variants of the benchmark. That makes them
-claims about the models, and a claim about a model is worth exactly as much as
-its agreement with the model that was trained.
-
-So the script does two things, in this order. It first reads the grid
-configuration -- the constants of ``matrix.py`` and the defaults of
-``ModelConfig`` -- and checks every dimension and every coefficient the figures
-print against it. Only then does it draw. If the grid is retuned and the figures
-are not, the check fails and nothing is written: a figure claiming a dimension
-the runs did not use is worse than no figure at all.
-
-The configuration is read with :mod:`ast` rather than imported. Importing
-``matrix`` pulls in torch and pm4py, and a script that only draws boxes has no
-business requiring the training stack; the file it reads is the same one the
-grid runs from, so nothing is lost by not executing it.
-
-The drawing itself used to live in ``nspm.visualization.architecture_plots``,
-together with the ablation ladder that the thesis does not report. The ladder is
-gone and what is left is here, because a figure and the check that guards it
-belong in one file.
-
-The three figures are:
-
-* ``loss-channel.png``      baseline, projected net, state-indexed net;
-* ``feature-channel.png``   marking, graph encoder, marking sequence;
-* ``logic-losses.png``      local loss and global loss, reimplemented from
-  Mezini et al. and kept in a figure of their own because they belong to
-  someone else.
-
-    python official_experiments/scripts/architecture_figures.py
-"""
 from __future__ import annotations
 
 import argparse
@@ -66,8 +34,8 @@ NEUTRAL_FILL = "#eeede9"
 NEUTRAL_EDGE = "#b9b8b1"
 ARROW = "#8a8981"
 
+# Rounded block. ``color=None`` means shared skeleton (neutral grey)
 def _box(ax, x, y, w, h, text, *, color=None, fontsize=8, bold=False):
-    """Rounded block. ``color=None`` means shared skeleton (neutral grey)."""
     face = NEUTRAL_FILL if color is None else to_rgba(color, 0.20)
     edge = NEUTRAL_EDGE if color is None else color
     ax.add_patch(FancyBboxPatch(
@@ -201,16 +169,16 @@ _TRUNK = f"LSTM {HIDDEN_DIM}, {RECURRENT_LAYERS} layers\n(packed)"
 _HEAD = f"dropout {DROPOUT:.1f}\nLinear → |A|"
 
 
+# Curved arrow, for the one place where the flow doubles back
 def _loop_arrow(ax, x0, y0, x1, y1, color, rad=0.3):
-    """Curved arrow, for the one place where the flow doubles back."""
     ax.annotate("", xy=(x1, y1), xytext=(x0, y0), zorder=1,
                 arrowprops=dict(arrowstyle="-|>", color=color, linewidth=1.3,
                                 linestyle=(0, (4, 2)), shrinkA=4, shrinkB=4,
                                 connectionstyle=f"arc3,rad={rad}"))
 
 
+# Prefix, embedding, recurrence, hidden state: the part nobody varies
 def _draw_trunk(ax, x, w, *, bottom=5.7):
-    """Prefix, embedding, recurrence, hidden state: the part nobody varies."""
     _box(ax, x, 9.3, w, 0.9, "token prefix\n(B, L)")
     _arrow(ax, x, 8.85, x, 8.55)
     _box(ax, x, 8.1, w, 0.9, f"Embedding {EMBEDDING_DIM}")
@@ -225,8 +193,8 @@ def _set_panel_title(ax, key):
     ax.set_title(f"{title}\n{subtitle}", fontsize=11, color=INK, pad=10)
 
 
+# One feature rung: neural path left, symbolic path right, joined
 def draw_feature_rung(ax, variant: str) -> None:
-    """One feature rung: neural path left, symbolic path right, joined."""
     colour = PANEL_COLORS[variant]
     body, out_dim, shape = FEATURE_BODIES[variant]
     ax.set(xlim=(0, 10), ylim=(0, 10))
@@ -256,13 +224,8 @@ def draw_feature_rung(ax, variant: str) -> None:
     _set_panel_title(ax, variant)
 
 
+# The three feature rungs side by side
 def plot_feature_channel(path: str | Path | None = None) -> plt.Figure:
-    """The three feature rungs side by side.
-
-    Read left to right: the grey skeleton never moves and only the coloured
-    encoder changes, so a difference between two adjacent panels is the value
-    of one ingredient and nothing else.
-    """
     fig, axes = plt.subplots(1, 3, figsize=(12.6, 8.4))
     for ax, variant in zip(axes, FEATURE_ORDER):
         draw_feature_rung(ax, variant)
@@ -279,16 +242,8 @@ def plot_feature_channel(path: str | Path | None = None) -> plt.Figure:
     return save_figure(fig, path)
 
 
+# One loss arm, laid out exactly like a feature rung
 def draw_loss_arm(ax, arm: str) -> None:
-    """One loss arm, laid out exactly like a feature rung.
-
-    The grey skeleton is the same picture as in :func:`draw_feature_rung`, and
-    that is the point: the symbolic column never reaches the forward pass. It
-    runs the full height of the panel and joins only at the objective, so the
-    reader sees where the two channels differ without being told. The baseline
-    has no symbolic column at all, and the empty half of its panel is the
-    reference every other panel is read against.
-    """
     colour = PANEL_COLORS[arm]
     ax.set(xlim=(0, 10), ylim=(0, 10))
     ax.axis("off")
@@ -323,13 +278,8 @@ def draw_loss_arm(ax, arm: str) -> None:
     _set_panel_title(ax, arm)
 
 
+# The baseline and the two net-derived penalties, side by side
 def plot_loss_channel(path: str | Path | None = None) -> plt.Figure:
-    """The baseline and the two net-derived penalties, side by side.
-
-    The panels are deliberately near-identical: unlike the feature rungs, these
-    arms share their architecture exactly, and the only thing that changes is
-    the automaton the mask comes from and how its rows are indexed.
-    """
     fig, axes = plt.subplots(1, 3, figsize=(12.6, 8.4))
     for ax, arm in zip(axes, LOSS_ORDER):
         draw_loss_arm(ax, arm)
@@ -347,15 +297,8 @@ def plot_loss_channel(path: str | Path | None = None) -> plt.Figure:
     return save_figure(fig, path)
 
 
+# The local logic loss: one step, and the mass the automaton forbids
 def draw_local_loss(ax) -> None:
-    """The local logic loss: one step, and the mass the automaton forbids.
-
-    Architecturally this is the projected-net arm. Two things differ, and both
-    are in the objective: the cross-entropy is switched off on the examples
-    whose target is itself forbidden, and the penalty is ``-log(1 - mass)``
-    rather than the mass, so it grows without bound as the forbidden
-    probability approaches one.
-    """
     colour = PANEL_COLORS["local"]
     source, body, mask = AXEL_ARMS["local"]
     ax.set(xlim=(0, 10), ylim=(0, 10))
@@ -386,15 +329,8 @@ def draw_local_loss(ax) -> None:
     _set_panel_title(ax, "local")
 
 
+# The global logic loss: the model runs on, and the automaton judges
 def draw_global_loss(ax) -> None:
-    """The global logic loss: the model runs on, and the automaton judges.
-
-    The panel breaks the layout of every other one, because the method does.
-    The prediction is fed back into the recurrence through a Gumbel-Softmax
-    sample, so the choice stays differentiable, and the tensorized automaton
-    consumes the same soft activity. What reaches the objective is not a mass
-    at one step but how much acceptance survives at the end of the rollout.
-    """
     colour = PANEL_COLORS["global"]
     source, body, state = AXEL_ARMS["global"]
     ax.set(xlim=(0, 10), ylim=(0, 10))
@@ -442,14 +378,8 @@ def draw_global_loss(ax) -> None:
     _set_panel_title(ax, "global")
 
 
+# The two logic losses of the state of the art, side by side
 def plot_logic_losses(path: str | Path | None = None) -> plt.Figure:
-    """The two logic losses of the state of the art, side by side.
-
-    They share the trunk with everything else in the benchmark and read the
-    same automaton as the projected-net arm, so what the two panels isolate is
-    the objective and nothing more: a mass at one step against the acceptance
-    of a whole generated suffix.
-    """
     fig, axes = plt.subplots(1, 2, figsize=(9.0, 8.4))
     draw_local_loss(axes[0])
     draw_global_loss(axes[1])
@@ -488,13 +418,8 @@ CHECKS = (
 )
 
 
+# Module-level literal assignments of ``path``, without importing it
 def literals(path: Path, inside: str | None = None) -> dict[str, object]:
-    """Module-level literal assignments of ``path``, without importing it.
-
-    ``inside`` restricts the search to the body of one class, which is how the
-    defaults of a dataclass are read. Anything that is not a plain literal --
-    a call, a comprehension, a name -- is skipped: the figures never quote one.
-    """
     body = ast.parse(path.read_text(encoding="utf-8")).body
     if inside is not None:
         body = next(node for node in body
@@ -519,8 +444,8 @@ def literals(path: Path, inside: str | None = None) -> dict[str, object]:
     return values
 
 
+# Refuse to draw a figure that disagrees with the grid it describes
 def verify() -> None:
-    """Refuse to draw a figure that disagrees with the grid it describes."""
     sources = {"grid": literals(GRID), "model": literals(CONFIG, inside="ModelConfig")}
 
     mismatches = []
@@ -540,7 +465,8 @@ def verify() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description="Draw the three architecture figures of the thesis from the code that ran.")
     parser.add_argument(
         "--out", type=Path, default=FIGURES,
         help="where to write the three PNGs (default: official_experiments/figures)")

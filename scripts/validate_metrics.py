@@ -1,27 +1,4 @@
-"""Verifica che le metriche della matrice temporale misurino cio' che dicono.
-
-Non allena niente e non tocca ``runs/temporal_matrix/results.csv``. Fa due
-controlli indipendenti, entrambi in pochi minuti.
-
-1. **Test dell'oracolo.** Si sostituisce la predizione con il suffisso VERO e si
-   ricalcolano le metriche del task 2. Una metrica ben posta deve dare il suo
-   valore perfetto: DL 1.0, exact match 1.0, violazioni 0. Se non lo fa, quella
-   metrica sta misurando in parte i dati invece del modello, e il valore che
-   restituisce e' un pavimento che il modello non puo' scendere sotto.
-
-2. **Riproduzione da checkpoint.** Si ricarica un modello salvato, si rifanno
-   split, vocabolario, rete di Petri, DFA e vincoli da zero, si rivaluta e si
-   confronta con la riga corrispondente del CSV. Se i numeri coincidono alla
-   sesta cifra, allora (a) la catena di valutazione e' deterministica e (b) i 900
-   checkpoint sono davvero riutilizzabili: si possono aggiungere o cambiare
-   metriche senza riaddestrare niente.
-
-Uso
----
-  python scripts/validate_metrics.py
-  python scripts/validate_metrics.py --datasets Sepsis_Case
-  python scripts/validate_metrics.py --skip-checkpoints     # solo l'oracolo
-"""
+# Check that the metrics measure what they claim
 
 import argparse
 import sys
@@ -55,11 +32,11 @@ from nspm.process.petrinet import PetriNet
 
 DATASETS = ("Sepsis_Case", "BPIC_2013_incidents", "BPIC_2020_DomesticDeclarations")
 
-#: Coppie (model_kind, variante, famiglia di dati) da riprovare da checkpoint.
-#: Una senza canale simbolico e una con la sequenza di marking, che e' il
-#: percorso piu' fragile: in generazione libera i marking vanno rigiocati dalle
-#: predizioni del modello e un disallineamento non darebbe errore, solo numeri
-#: sbagliati.
+#: (model_kind, variant, data family) pairs to re-run from a checkpoint. One
+#: without a symbolic channel and one with the marking sequence, which is the
+#: most fragile path: in free generation the markings have to be replayed from
+#: the model's own predictions, and a misalignment would not raise an error,
+#: only wrong numbers.
 CHECKPOINT_PROBES = (("gru", "checker", "plain"), ("gru_seq", "seq", "sequences"))
 
 
@@ -73,13 +50,8 @@ def find_log(dataset: str) -> Path:
     raise FileNotFoundError(f"nessun log in {folder}")
 
 
+# Rebuild from scratch everything the grid used for that dataset
 def rebuild(dataset: str, config) -> dict:
-    """Ricostruisce da zero tutto cio' che la matrice ha usato per quel dataset.
-
-    Se questa funzione non fosse deterministica, il confronto col CSV del
-    controllo 2 fallirebbe -- il che e' esattamente il motivo per cui il
-    controllo esiste.
-    """
     splits = build_splits(read_log(find_log(dataset)), config)
     vocabulary = build_vocabulary(splits, config)
     knowledge = knowledge_traces(splits, config)
@@ -104,15 +76,8 @@ def rebuild(dataset: str, config) -> dict:
     }
 
 
+# Task-2 metrics with the prediction replaced by the ground truth
 def oracle_check(dataset: str, art: dict) -> dict:
-    """Metriche del task 2 con la predizione sostituita dalla verita'.
-
-    Riporta anche quante volte il **solo prefisso vero** viola gia' un vincolo di
-    precedenza: e' la fonte della contaminazione, perche'
-    ``precedence_violation_rate`` valuta ``prefisso + suffisso generato`` e non
-    sa distinguere una violazione introdotta dal modello da una che era gia'
-    nella parte di traccia che gli e' stata data in pasto.
-    """
     splits, constraints = art["splits"], art["constraints"]
     records = []
     prefix_only = 0
@@ -136,8 +101,8 @@ def oracle_check(dataset: str, art: dict) -> dict:
     }
 
 
+# Re-evaluate saved models and compare with the CSV, metric by metric
 def checkpoint_check(dataset: str, art: dict, config, device, rows) -> list[dict]:
-    """Rivaluta modelli salvati e confronta con il CSV, metrica per metrica."""
     checkpoints = ROOT / "runs" / "temporal_matrix" / "ckpt"
     vocabulary, petrinet = art["vocabulary"], art["petrinet"]
     outcomes = []
@@ -195,7 +160,8 @@ def checkpoint_check(dataset: str, art: dict, config, device, rows) -> list[dict
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+        description="Check that the metrics measure what they claim.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--datasets", nargs="+", default=list(DATASETS), choices=DATASETS)
     parser.add_argument("--skip-checkpoints", action="store_true")

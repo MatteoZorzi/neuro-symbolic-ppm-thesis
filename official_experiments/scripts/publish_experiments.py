@@ -1,31 +1,5 @@
-"""Rebuild ``all_grids.csv`` from the eight grids, and check them while doing it.
+# Rebuild ``all_grids.csv`` from the eight grids, and check them while doing it
 
-``official_experiments/`` holds the results the thesis reports, and it holds
-them twice. The eight files under ``protocol-test/`` and ``protocol-train/`` are
-the source of truth: one grid per file, named after the log and the source of
-the knowledge, so that a reader can open one and know what is in it.
-``all_grids.csv`` is the same rows concatenated, and exists because every script
-in this directory wants one table rather than eight.
-
-This script derives the second from the first. It is not how the directory was
-originally filled -- that was done once, from the job output on the cluster,
-through a staging copy that is no longer kept: ``runs/`` is 800 MB, is not under
-version control and will never be published, so a rebuild path that started
-there could not be run by anyone reading the thesis. It starts here instead,
-which means the eight grids are data and not a derivation.
-
-A grid is a pair (log, knowledge source): 9 variants x 9 noise levels x 10
-seeds, 810 cells. Three checks run before anything is written, and if one fails
-nothing is:
-
-* the cell count, so that a grid that lost rows to a cancelled job is caught;
-* no duplicate key, so that a grid merged twice is caught;
-* one accelerator per grid. This is not pedantry. Between a V100 and an A100
-  there is a factor of 1.74 on the training seconds, and a grid straddling two
-  cards would carry ``secs_`` columns that mean nothing.
-
-    python official_experiments/scripts/publish_experiments.py
-"""
 from __future__ import annotations
 
 import argparse
@@ -80,7 +54,8 @@ def check(grid: pd.DataFrame, dataset: str, protocol: str, expected: int) -> Non
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description="Rebuild all_grids.csv from the eight grids, checking them on the way.")
     parser.add_argument("--root", type=Path, default=ROOT / "official_experiments",
                         help="directory holding protocol-test and protocol-train")
     parser.add_argument("--out", type=Path, default=GRID_CSV)

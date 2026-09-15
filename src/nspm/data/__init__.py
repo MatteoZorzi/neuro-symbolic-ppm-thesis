@@ -1,4 +1,4 @@
-"""Input parsing and supervised prefix-dataset preparation."""
+# Input parsing and supervised prefix-dataset preparation
 
 from .preparation import (
     PAD,

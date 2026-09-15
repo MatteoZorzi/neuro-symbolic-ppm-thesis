@@ -1,4 +1,4 @@
-"""Process-model construction and conformance rules."""
+# Process-model construction and conformance rules
 
 from .automaton import END, START, ProcessDFA
 from .reachability import ReachabilityAutomaton, UnboundedNetError

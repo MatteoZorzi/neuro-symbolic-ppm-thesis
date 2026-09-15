@@ -1,13 +1,5 @@
-"""Feasibility probe: Petri net + marking + heterogeneous GNN (TACO-style).
+# Feasibility probe: Petri net + marking + heterogeneous GNN (TACO-style)
 
-Answers, with the tools actually installed in this environment:
-1. Can pm4py discover a Petri net (inductive miner) from our logs?      -> sizes
-2. Can we extract places / transitions / arcs / initial+final marking?  -> objects
-3. Can we build the adjacency structures (bipartite hetero + place graph)?
-4. Given a prefix, can we compute its marking (token replay w/ taus)?   -> vector
-5. Is torch_geometric ready for heterogeneous graphs (HeteroData/HeteroConv)?
-6. How fast is marking computation per prefix (rough throughput)?
-"""
 import sys
 import time
 from pathlib import Path
@@ -69,8 +61,8 @@ print(f"[3] place-graph adjacency: {A.shape}, {int(A.sum())} edges")
 from pm4py.algo.conformance.tokenreplay import algorithm as token_replay
 from pm4py.objects.log.obj import Event, EventLog, Trace
 
+# Reached marking after replaying `prefix` (token replay handles taus)
 def prefix_marking(prefix, net, im):
-    """Reached marking after replaying `prefix` (token replay handles taus)."""
     trace = Trace()
     for activity in prefix:
         trace.append(Event({"concept:name": activity}))

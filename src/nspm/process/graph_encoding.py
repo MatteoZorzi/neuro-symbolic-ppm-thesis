@@ -1,28 +1,4 @@
-"""Encode constraint DFAs and traces as graphs for the hierarchical embedder.
-
-This mirrors the graph construction of the original T-LEAF embedder
-(``src/Action_Recognition/models/embedder_loss_util.py``) but is rewritten for
-the single-label process setting and without the ``spot`` dependency. Three
-feature dimensions are used, matching the original architecture:
-
-* ``prop_dim`` (default 50) -- propositional literal / activity features, the
-  input to the edge embedder ``qe``;
-* ``node_dim`` (default 100) -- DFA node-type features and the output of ``qe``;
-  the two must match because lifted edges become nodes (``edge2node``);
-* the meta embedder ``qm`` then maps ``node_dim`` to the final embedding.
-
-Pipeline for one automaton/trace:
-
-1. each edge guard becomes a small OR/AND/literal proposition graph;
-2. the edge embedder ``qe`` embeds each proposition graph into a ``node_dim``
-   vector (the edge feature);
-3. ``edge2node`` lifts every edge into a node connected to its endpoints,
-   yielding the graph the meta embedder ``qm`` consumes.
-
-For a model's *predicted* next activity the final edge uses a probability-
-weighted ("soft") literal feature, so the resulting embedding -- and hence the
-logic loss -- is differentiable with respect to the task model.
-"""
+# Encode constraint DFAs and traces as graphs for the hierarchical embedder
 
 from __future__ import annotations
 
@@ -34,9 +10,9 @@ from torch_geometric.data import Data
 from .ltl_constraints import COMMON, FINAL, INIT, ConstraintDFA, Guard
 
 
+# Fixed feature vectors for activities, operators and node types
 @dataclass
 class FeatureSpace:
-    """Fixed feature vectors for activities, operators and node types."""
 
     activities: tuple[str, ...]
     prop_dim: int
@@ -92,24 +68,20 @@ class FeatureSpace:
     def index(self) -> dict[str, int]:
         return {activity: i for i, activity in enumerate(self.activities)}
 
+    # Feature for ``activity`` (positive) or its negation ``1 - feat``
     def literal_feat(self, activity: str, positive: bool) -> torch.Tensor:
-        """Feature for ``activity`` (positive) or its negation ``1 - feat``."""
 
         vector = self.activity_feat[self.index[activity]]
         return vector if positive else (1.0 - vector)
 
+    # Probability-weighted activity feature ``Σ_a p_a · feat(a)``
     def soft_activity_feat(self, probabilities: torch.Tensor) -> torch.Tensor:
-        """Probability-weighted activity feature ``Σ_a p_a · feat(a)``.
-
-        ``probabilities`` is a length ``n_activities`` distribution (e.g. a
-        softmax over the model logits). The result is differentiable w.r.t. it.
-        """
 
         return probabilities @ self.activity_feat
 
 
+# Return the guard as an OR of ANDs of literal feature vectors
 def _guard_disjuncts(guard: Guard, space: FeatureSpace) -> list[list[torch.Tensor]]:
-    """Return the guard as an OR of ANDs of literal feature vectors."""
 
     if guard.is_true:
         return [[space.true_feat]]
@@ -123,11 +95,11 @@ def _guard_disjuncts(guard: Guard, space: FeatureSpace) -> list[list[torch.Tenso
     return [literals]  # A single conjunction (AND) of the literals.
 
 
+# Build the OR -> AND -> literal proposition graph for one edge guard
 def build_prop_graph(
     disjuncts: list[list[torch.Tensor]],
     space: FeatureSpace,
 ) -> Data:
-    """Build the OR -> AND -> literal proposition graph for one edge guard."""
 
     node_features: list[torch.Tensor] = [space.or_feat]  # node 0 is the OR root.
     sources: list[int] = []
@@ -154,22 +126,18 @@ def guard_prop_graph(guard: Guard, space: FeatureSpace) -> Data:
     return build_prop_graph(_guard_disjuncts(guard, space), space)
 
 
+# Proposition graph whose single literal is a (differentiable) soft feature
 def soft_prop_graph(soft_literal: torch.Tensor, space: FeatureSpace) -> Data:
-    """Proposition graph whose single literal is a (differentiable) soft feature."""
 
     return build_prop_graph([[soft_literal]], space)
 
 
+# Lift every edge into a node connected to its endpoints (paper's trick)
 def _edge2node(
     node_feats: torch.Tensor,
     edge_index: torch.Tensor,
     edge_feats: torch.Tensor,
 ) -> Data:
-    """Lift every edge into a node connected to its endpoints (paper's trick).
-
-    ``node_feats`` and ``edge_feats`` must share their feature dimension; the
-    new graph's node features are their concatenation.
-    """
 
     n_nodes = node_feats.size(0)
     nodes = torch.cat([node_feats, edge_feats], dim=0)
@@ -188,17 +156,13 @@ def _edge2node(
     return Data(x=nodes, edge_index=lifted_index)
 
 
+# Embed each edge's proposition graph and lift the result for ``qm``
 def _lift_edges(
     node_feats: torch.Tensor,
     edges: list[tuple[int, int, Data]],
     edge_embedder,
     space: FeatureSpace,
 ) -> Data:
-    """Embed each edge's proposition graph and lift the result for ``qm``.
-
-    ``edges`` pairs an endpoint ``(src, dst)`` with the proposition ``Data``
-    graph describing that edge's guard. Shared by DFA and trace encoding.
-    """
 
     sources = [src for src, _, _ in edges]
     targets = [dst for _, dst, _ in edges]
@@ -208,8 +172,8 @@ def _lift_edges(
     return _edge2node(node_feats, edge_index, edge_feats_tensor)
 
 
+# Encode a constraint DFA as the lifted graph consumed by ``qm``
 def encode_dfa(dfa: ConstraintDFA, space: FeatureSpace, edge_embedder) -> Data:
-    """Encode a constraint DFA as the lifted graph consumed by ``qm``."""
 
     states = list(dfa.states)  # sorted; the initial state is 0 -> row 0.
     state_row = {state: row for row, state in enumerate(states)}
@@ -224,6 +188,7 @@ def encode_dfa(dfa: ConstraintDFA, space: FeatureSpace, edge_embedder) -> Data:
     return _lift_edges(node_feats, edges, edge_embedder, space)
 
 
+# Encode a trace as a linear automaton, lifted for ``qm``
 def encode_trace(
     trace,
     space: FeatureSpace,
@@ -231,13 +196,6 @@ def encode_trace(
     *,
     soft_last: torch.Tensor | None = None,
 ) -> Data:
-    """Encode a trace as a linear automaton, lifted for ``qm``.
-
-    The trace is a chain ``INIT -> COMMON* -> FINAL`` whose edges carry the
-    activity performed at each step. When ``soft_last`` is given it replaces the
-    final edge's literal with a probability-weighted soft activity feature,
-    making the embedding differentiable w.r.t. the predicting model.
-    """
 
     activities = list(trace)
     if not activities:

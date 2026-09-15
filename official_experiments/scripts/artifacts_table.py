@@ -1,29 +1,5 @@
-"""Recompute ``tab:exp-artifacts`` of Chapter 5 by re-mining the artifacts.
+# Recompute ``tab:exp-artifacts`` of Chapter 5 by re-mining the artifacts
 
-This table is different from every other one in the chapter. The others
-summarise a result grid, so checking them means reading a CSV. This one
-describes the symbolic objects the runs were given -- the discovered Petri net,
-its reachability automaton, the precedence constraints -- and none of those
-counts is written to the grid. Checking it therefore means mining them again.
-
-That is the point. The nets are rebuilt through ``build_dataset_artifacts``,
-the same function ``matrix.py`` calls before it trains anything, with
-the same protocol configuration. What comes out is what the runs saw, or the
-run was not reproducible.
-
-The strongest check here is not a count, it is ``net_fingerprint``. Every row of
-the grid carries the fingerprint of the net that produced it, and the fingerprint
-is built from portable things only -- counts and sorted labels, never the names
-pm4py invents at each call. So the net mined now can be compared against the net
-the runs used, exactly, and the script reports whether they agree. Two nets with
-the same counts but different arcs would still pass; that limit is documented in
-``nspm.process.artifact_store``.
-
-Mining is not free. The artifact cache under ``runs/_artifacts`` is used, so the
-first run is slow and later ones are not.
-
-    python official_experiments/scripts/artifacts_table.py
-"""
 from __future__ import annotations
 
 import sys
@@ -68,14 +44,8 @@ MASKS = {"dfa", "net", "net_state"}
 CACHE = ROOT / "runs" / "_artifacts"
 
 
+# The configuration ``matrix.py`` builds for protocol B and for protocol C
 def protocol_config(knowledge_source: str):
-    """The configuration ``matrix.py`` builds for protocol B and for protocol C.
-
-    They differ in one field, which is the whole point of the pair: the
-    partition the knowledge is mined from. Everything else -- temporal split,
-    vocabulary over all partitions, event-level noise -- comes from
-    ``temporal_protocol`` untouched.
-    """
     config = temporal_protocol()
     config = replace(config, data=replace(config.data,
                                           knowledge_source=knowledge_source))
@@ -87,8 +57,8 @@ def protocol_config(knowledge_source: str):
                       recurrent_layers=matrix.RECURRENT_LAYERS))
 
 
+# Mine one log under one protocol and count what the table reports
 def measure(dataset: str, knowledge_source: str) -> dict:
-    """Mine one log under one protocol and count what the table reports."""
     art = matrix.build_dataset_artifacts(
         dataset, protocol_config(knowledge_source), FAMILIES, MASKS,
         cache_dir=CACHE)
@@ -110,13 +80,8 @@ def measure(dataset: str, knowledge_source: str) -> dict:
     }
 
 
+# The net fingerprint each log carries in the grid, one per dataset
 def fingerprints_of_grid(protocol: str) -> dict[str, str]:
-    """The net fingerprint each log carries in the grid, one per dataset.
-
-    A log whose rows disagree is left out rather than reported: a grid with two
-    nets under one protocol is a grid that should not have been merged, and
-    ``publish_experiments.py`` is where that is caught.
-    """
     if not GRID_CSV.exists():
         return {}
     grid = pd.read_csv(GRID_CSV)

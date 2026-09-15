@@ -1,23 +1,5 @@
-"""What every script in this directory needs, in one place.
+# What every script in this directory needs, in one place
 
-Before the cleanup these constants lived in ``src/nspm/visualization``, and the
-scripts reached them through a stub that faked the ``nspm`` package so that
-importing a palette would not drag in torch and pm4py. The stub was repeated in
-three files and the palette was repeated in none of them only because the import
-hid it. Both are gone: the drawing constants live here, beside the figures they
-draw, and ``official_experiments/`` no longer depends on ``src/`` to produce a
-figure.
-
-Two scripts still import from ``src/``, and for a reason that is not style:
-``dataset_table.py`` reads the event logs through ``nspm.data.loader`` and
-``artifacts_table.py`` mines the symbolic artifacts through the experiment code.
-Those two describe the inputs of the experiment, so they have to use the same
-code the experiment used.
-
-The palette is the one the thesis figures have always used. A model keeps its
-colour across every figure, which is why the mapping is by model name and not by
-position: a chart that reorders its series must not recolour them.
-"""
 from __future__ import annotations
 
 import shutil
@@ -104,8 +86,8 @@ GRID = "#e1e0d9"
 AXIS = "#c3c2b7"
 
 
+# Write ``fig`` to ``path`` if there is one, and return it either way
 def save_figure(fig: plt.Figure, path: str | Path | None) -> plt.Figure:
-    """Write ``fig`` to ``path`` if there is one, and return it either way."""
     if path is not None:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -113,8 +95,8 @@ def save_figure(fig: plt.Figure, path: str | Path | None) -> plt.Figure:
     return fig
 
 
+# Mirror a written figure into the thesis image directory
 def copy_to_thesis(path: Path) -> Path:
-    """Mirror a written figure into the thesis image directory."""
     THESIS_IMAGES.mkdir(parents=True, exist_ok=True)
     copy = THESIS_IMAGES / path.name
     shutil.copyfile(path, copy)

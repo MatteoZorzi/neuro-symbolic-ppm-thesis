@@ -1,4 +1,4 @@
-"""Model evaluation and serialisable metrics."""
+# Model evaluation and serialisable metrics
 
 from __future__ import annotations
 
@@ -45,6 +45,7 @@ class EvaluationResult:
         }
 
 
+# Evaluate predictive quality and process-conformance quality together
 @torch.no_grad()
 def evaluate_model(
     model: nn.Module,
@@ -54,13 +55,6 @@ def evaluate_model(
     top_k: int = 3,
     enforce_mask: bool = False,
 ) -> EvaluationResult:
-    """Evaluate predictive quality and process-conformance quality together.
-
-    When ``enforce_mask`` is set, DFA-forbidden classes are removed from the
-    logits before predictions are read off (the ``baseline+mask`` variant: hard
-    conformance at inference). Cross-entropy ``loss`` is always computed on the
-    raw logits so it stays comparable across variants.
-    """
 
     model.eval()
     criterion = nn.CrossEntropyLoss(reduction="sum")

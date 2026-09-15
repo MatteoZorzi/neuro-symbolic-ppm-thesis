@@ -1,90 +1,5 @@
-"""LA pipeline sperimentale. Ex ``temporal_matrix.py``, rinominata il 21/08/2026.
-
-Questo e' lo script definitivo: ``final_matrix.py`` e ``suffix_on_t12.py``
-restano solo finche' i loro CSV congelati servono, poi vanno tolti. Motivo della
-scelta, in breve:
-
-* misura **entrambi** i compiti (next activity e suffisso) nella stessa run,
-  mentre ``final_matrix.py`` ne misurava uno e ``suffix_on_t12.py`` recuperava
-  l'altro ricaricando i checkpoint;
-* proprio per questo non ricostruisce mai gli artefatti a posteriori. E'
-  l'unica difesa contro il fatto che ``pm4py.discover_petri_net_inductive`` NON
-  e' riproducibile fra processi (su BPIC20 da' 21 posti quasi sempre e 22 ogni
-  tanto): qui la rete e' una sola per run, e addestramento e valutazione la
-  condividono.
-
-Il protocollo non e' cablato: split, vocabolario e sorgente della conoscenza
-arrivano dal config (``split_strategy``, ``vocabulary_scope``,
-``knowledge_source``, vedi ``nspm/config.py`` e ``nspm/data/preparation.py``).
-Con ``temporal_protocol()`` si ottiene il protocollo B, descritto qui sotto; con
-i default di ``ExperimentConfig`` si otterrebbe lo split del protocollo A.
-L'unica cosa ancora cablata e' il modello di rumore: qui ``corrupt_traces``
-(eventi), in A ``corrupt_targets`` (target). Diventera' il quarto parametro.
-
-Cosa cambia rispetto alla T12 (protocollo A)
---------------------------------------------
-1. **Split temporale su tutti i case**: ordinati per timestamp del primo evento
-   e tagliati per posizione, senza shuffle e senza seed. E' la semantica di
-   ``nirdizati_light.log.common.split_train_val_test`` con ``shuffle=False``
-   (quella libreria non ha uno split temporale suo: taglia per indice, e la
-   temporalita' viene dal pre-ordinamento). Default 70/15/15, configurabile.
-2. **Nessun filtro**: nessuna deduplica di varianti, nessuna traccia scartata,
-   duplicati mantenuti. Il vocabolario si costruisce su TUTTE le partizioni,
-   che e' cio' che permette di non scartare i case con attivita' che compaiono
-   solo tardi nel tempo.
-3. **Background knowledge dal TEST**: DFA, Petri net e vincoli di precedenza
-   sono estratti dalla partizione di test.
-4. **Rumore a livello di EVENTO**: si sostituisce l'etichetta di attivita' di
-   una frazione degli eventi di train con un'altra etichetta del vocabolario,
-   come in Mezini et al. Sec. 4.1. La T12 corrompeva solo i target degli
-   esempi, lasciando le tracce intatte: li' il training set restava conforme al
-   100% a ogni livello di rumore. Qui la corruzione danneggia la traccia
-   stessa, quindi si propaga ai prefissi successivi, al replay sulla rete di
-   Petri e alla conformita' del log. Ogni riga porta ``train_compliance``, la
-   frazione di tracce di train ancora conformi dopo l'iniezione (la Table 2 del
-   paper), senza la quale l'asse rumore non e' interpretabile.
-
-   Conseguenza pratica: i marking vanno rigiocati a ogni livello di rumore, per
-   cui i log si costruiscono una volta per (noise, seed) invece che una volta
-   per dataset. Costa ~12-15 min per dataset, ~40 min in totale.
-
-Cosa misura ogni cella
-----------------------
-Due task sullo STESSO modello addestrato, in sequenza:
-
-1. **next activity** — un passo dal prefisso di ground truth: accuracy,
-   macro F1, top-3, violation rate, forbidden mass.
-2. **suffix prediction** — il modello prosegue e rigenera la traccia dal
-   proprio output, quindi gli errori si accumulano. Metrica principale la
-   **Damerau-Levenshtein normalizzata** (``dl_similarity``, 1 = traccia
-   identica), piu' accuracy posizionale, exact match e due tassi di
-   conformita': violazioni directly-follows per passo e violazioni di
-   precedenza a livello di traccia.
-
-Prefissi: meta' della lunghezza mediana delle tracce di test, +1, +2.
-
-Limiti noti, da dichiarare in tesi
-----------------------------------
-* La generazione e' **condizionata sulla lunghezza**: i modelli non hanno un
-  token di fine traccia, quindi si generano esattamente ``len(suffisso vero)``
-  passi. La DL risulta piu' alta di quella di un vero suffix predictor e NON e'
-  confrontabile con i valori pubblicati; resta valida come confronto fra
-  varianti, che vedono tutte lo stesso vantaggio.
-* Con la background knowledge dal test, forbidden mass e tassi di violazione
-  sono misurati contro artefatti estratti dalle stesse tracce su cui si valuta:
-  sono ottimistici per costruzione.
-
-Uso
----
-  python official_experiments/scripts/matrix.py
-  python official_experiments/scripts/matrix.py --datasets Sepsis_Case --archs gru
-  python official_experiments/scripts/matrix.py --variants baseline checker --noises 0.0
-  python official_experiments/scripts/matrix.py --val-fraction 0.10 --test-fraction 0.20
-
-I risultati sono appesi riga per riga a ``runs/temporal_matrix/results.csv`` con
-RESUME: le celle gia' presenti vengono saltate, quindi lo script si puo'
-lanciare a fette.
-"""
+# One cell of a grid: trains one model and measures next activity and suffix
+# prediction in the same run.
 
 import argparse
 import csv
@@ -123,32 +38,33 @@ from nspm.learning.evaluation import evaluate_model
 from nspm.learning.trace_prediction import evaluate_suffix_prediction
 
 DATASETS = ("Sepsis_Case", "BPIC_2013_incidents", "BPIC_2020_DomesticDeclarations")
-#: Aggiunti il 21/08/2026. Ammessi ma NON nel default: la griglia congelata e'
-#: 1260 righe sui tre log sopra, e un lancio senza argomenti deve continuare a
-#: riprodurre quella. Questi due si chiedono per nome.
+#: Allowed but NOT in the default set: the frozen grid is 1260 rows over the
+#: three logs above, and a launch without arguments has to keep reproducing it.
+#: These two are asked for by name.
 EXTRA_DATASETS = ("BPI_Challenge_2012", "BPI_Challenge_2015_Municipality")
 ALL_DATASETS = DATASETS + EXTRA_DATASETS
 ARCHS = ("gru", "lstm")
 VARIANTS = ("baseline", "checker", "marking", "gnn", "seq")
 CROSS_VARIANTS = ("checker_marking", "checker_gnn", "checker_seq")
 STEP6_VARIANTS = ("grnn",)
-#: Checker guidato dall'automa della RETE DI PETRI invece che dal DFA empirico
-#: (vedi ``MASK_SPEC``). Fuori dal default: cartella propria, unione in analisi.
+#: Checkers driven by the automaton of the PETRI NET instead of the empirical
+#: DFA (see ``MASK_SPEC``). Out of the default: own directory, merged in
+#: analysis.
 NETDFA_VARIANTS = ("checker_net", "checker_net_state")
-#: I due metodi di Axel, aggiunti il 24/08/2026. Fuori dal default per la stessa
-#: ragione degli altri: un lancio senza argomenti deve continuare a riprodurre
-#: la griglia congelata.
+#: The two methods of Mezini et al. Out of the default for the same reason as
+#: the others: a launch without arguments has to keep reproducing the frozen
+#: grid.
 AXEL_VARIANTS = ("lll", "gll")
 ALL_VARIANTS = (VARIANTS + CROSS_VARIANTS + STEP6_VARIANTS + NETDFA_VARIANTS
                 + AXEL_VARIANTS)
 NOISES = (0.0, 0.25, 0.5)
 SEEDS = tuple(range(10))
-LOGIC_WEIGHT = 0.5  # pre-registrato: lo stesso della T12 e del benchmark di corruzione
+LOGIC_WEIGHT = 0.5  # pre-registered: the same as the earlier grids
 
-# variante -> (suffisso kind, use_logic, famiglia di dati, automa della loss).
-# Le assi sono indipendenti: il suffisso sceglie l'encoder simbolico (feature),
-# il booleano accende il termine di loss, l'ultimo campo sceglie da quale automa
-# arriva la maschera che la loss penalizza.
+# variant -> (kind suffix, use_logic, data family, automaton of the loss).
+# The axes are independent: the suffix picks the symbolic encoder (feature), the
+# boolean turns the loss term on, the last field picks which automaton the mask
+# the loss penalises comes from.
 VARIANT_SPEC = {
     "baseline": ("", False, "plain", "dfa"),
     "checker": ("", True, "plain", "dfa"),
@@ -161,156 +77,154 @@ VARIANT_SPEC = {
     "grnn": ("_grnn", False, "sequences", "dfa"),
     "checker_net": ("", True, "plain", "net"),
     "checker_net_state": ("", True, "stated", "net_state"),
-    # I due metodi di Axel (nesy-suffix-prediction-dfa). Stesso tronco della
-    # baseline e stessa struttura di ``checker_net``, cioe' l'automa estratto
-    # dalla rete di Petri: cambia solo COME il vincolo entra nella loss, che e'
-    # l'unica cosa che l'esperimento vuole confrontare. Il termine di paragone
-    # diretto e' ``checker_net``, non ``checker``.
+    # The two methods of Mezini et al. (nesy-suffix-prediction-dfa). Same trunk
+    # as the baseline and same structure as ``checker_net``, that is the
+    # automaton extracted from the Petri net: only HOW the constraint enters the
+    # loss changes, which is the one thing the experiment wants to compare. The
+    # direct term of comparison is ``checker_net``, not ``checker``.
     "lll": ("", True, "plain", "axel_local"),
     "gll": ("", True, "plain", "axel_global"),
 }
 
-#: Iperparametri delle due loss di Axel. Lui fa uno sweep su dieci valori di
-#: alpha per quindici run; qui la griglia ha una seed sola, quindi i due valori
-#: si scelgono a mano e si dichiarano.
+#: Hyperparameters of the two losses of Mezini et al. They sweep ten values of
+#: alpha over fifteen runs; here the grid has a single seed, so the two values
+#: are chosen by hand and declared.
 #:
-#: In entrambe le loss ``alpha`` pesa la supervisione e ``1 - alpha`` la logica,
-#: quindi i due metodi girano su miscele opposte: la locale al 75% di logica, la
-#: globale al 75% di cross-entropy. Un valore per metodo, non uno solo: la
-#: penalita' locale e' una massa di probabilita' a un passo, quella globale il
-#: ``-log`` dell'accettazione di un rollout intero, e non stanno sulla stessa
-#: scala.
+#: In both losses ``alpha`` weighs the supervision and ``1 - alpha`` the logic,
+#: so the two methods run on opposite blends: the local one at 75% logic, the
+#: global one at 75% cross-entropy. One value per method, not a single one: the
+#: local penalty is a probability mass at one step, the global one the ``-log``
+#: of the acceptance of a whole rollout, and the two are not on the same scale.
 #:
-#: ``AXEL_SAMPLES`` e' il valore pieno di Axel. Il rollout costa ``horizon``
-#: passi sequenziali su un batch replicato altrettante volte, quindi su una
-#: scheda da 16 GB dieci campioni non ci stavano; la griglia gira su A100 da
-#: 80 GB, dove ci stanno. Va tenuto UGUALE su tutte le celle: con un numero di
-#: campioni diverso la stima dell'accettazione ha una varianza diversa, e le
-#: celle non sarebbero piu' confrontabili fra loro.
+#: ``AXEL_SAMPLES`` is their full value. The rollout costs ``horizon``
+#: sequential steps over a batch replicated as many times, so ten samples did
+#: not fit on a 16 GB card; the grid runs on 80 GB A100s, where they do. It has
+#: to be kept THE SAME on every cell: with a different number of samples the
+#: estimate of the acceptance has a different variance, and the cells would no
+#: longer be comparable with each other.
 AXEL_ALPHA_LOCAL = 0.25
 AXEL_ALPHA_GLOBAL = 0.75
 AXEL_TEMPERATURE = 0.5
 AXEL_SAMPLES = 10
 
-#: Taglia del tronco ricorrente. Sono i numeri di Mezini et al. (2026): due
-#: strati da cento unita', ottimizzatore Adam, batch da 64. La baseline compatta
-#: del repo era uno strato da 64, che per una GRU basta e per una LSTM no --
-#: l'intero vantaggio della cella di memoria sta nel poterla impilare.
+#: Size of the recurrent trunk. These are the numbers of Mezini et al. (2026):
+#: two layers of a hundred units, Adam, batches of 64. The compact baseline of
+#: this repo was one layer of 64, which is enough for a GRU and not for an LSTM:
+#: the whole advantage of the memory cell is in being able to stack it.
 #:
-#: Vale per TUTTE E NOVE le varianti, non solo per le due di Axel. Il confronto
-#: cella per cella regge solo se il tronco e' lo stesso: se i due metodi di Axel
-#: girassero sul loro tronco e i sette nostri sul nostro, la matrice misurerebbe
-#: la differenza fra le architetture invece che fra i canali della conoscenza.
+#: It holds for ALL NINE variants, not only for the two taken from them. The
+#: cell-by-cell comparison stands only if the trunk is the same: if their two
+#: methods ran on their trunk and our seven on ours, the grid would measure the
+#: difference between architectures instead of between knowledge channels.
 RECURRENT_HIDDEN = 100
 RECURRENT_LAYERS = 2
 
-#: Tetto delle epoche. Dodici erano poche: sulla griglia GRU un terzo delle
-#: celle si fermava a undici o dodici, cioe' per fine budget e non per
-#: convergenza, e una rete piu' grande ne chiede di piu', non di meno. Mezini et
-#: al. arrivano a 590-1607 epoche.
+#: Ceiling on the epochs. Twelve were too few: on the GRU grid a third of the
+#: cells stopped at eleven or twelve, that is because the budget ran out and not
+#: because they had converged, and a larger network asks for more, not fewer.
+#: Mezini et al. reach 590-1607 epochs.
 #:
-#: Il tetto non e' il costo: l'early stopping resta quello di prima, quindi le
-#: celle che gia' convergevano in quattro epoche continuano a fermarsi li'.
-#: Alzarlo paga solo dove serviva.
+#: The ceiling is not the cost: early stopping is unchanged, so the cells that
+#: already converged in four epochs keep stopping there. Raising it pays only
+#: where it was needed.
 MAX_EPOCHS = 60
 
-#: I due automi da cui puo' arrivare la maschera della loss. ``dfa`` e' il
-#: directly-follows empirico contato sulle tracce di knowledge; ``net`` e'
-#: l'automa di raggiungibilita' della rete di Petri gia' scoperta dalle stesse
-#: tracce, proiettato su directly-follows. Stessa informazione sorgente, canale
-#: diverso: la rete generalizza, quindi la sua maschera e' piu' larga.
+#: The two automata the loss mask can come from. ``dfa`` is the empirical
+#: directly-follows relation counted on the knowledge traces; ``net`` is the
+#: reachability automaton of the Petri net discovered from those same traces,
+#: projected onto directly-follows form. Same source information, different
+#: channel: the net generalises, so its mask is wider.
 #:
-#: ``net_state`` e' la stessa rete SENZA proiezione: una riga per stato
-#: dell'automa invece che per attivita', indicizzata replaying il prefisso. E'
-#: l'unico modo in cui la memoria dei marking arriva fino alla loss.
+#: ``net_state`` is the same net WITHOUT the projection: one row per automaton
+#: state instead of per activity, indexed by replaying the prefix. It is the
+#: only way the memory of the markings reaches the loss.
 #:
-#: Tutte le varianti si VALUTANO su ``dfa`` -- comprese le metriche del
-#: suffisso, che usano ``art["automaton"]``. Se ogni variante misurasse la
-#: conformita' contro il proprio automa le colonne non sarebbero piu'
-#: confrontabili fra righe.
+#: Every variant is EVALUATED on ``dfa`` -- including the suffix metrics, which
+#: use ``art["automaton"]``. If each variant measured conformance against its
+#: own automaton, the columns would no longer be comparable across rows.
 MASK_SPEC = ("dfa", "net", "net_state")
 EVAL_MASK = "dfa"
 
-#: Chi ha bisogno della struttura estratta dalla rete di Petri.
+#: Who needs the structure extracted from the Petri net.
 #:
-#: Il criterio e' quello del prof: due metodi sono confrontabili solo se vedono
-#: LO STESSO oggetto simbolico. Chi usa la rete usa la stessa rete, chi usa il
-#: DFA usa lo stesso DFA -- altrimenti la differenza fra due celle misura da
-#: quale struttura viene la conoscenza invece di come quella conoscenza entra
-#: nella loss, che e' l'unica cosa che l'esperimento vuole isolare.
+#: The criterion is the supervisor's: two methods are comparable only if they
+#: see THE SAME symbolic object. Whoever uses the net uses the same net, whoever
+#: uses the DFA uses the same DFA -- otherwise the difference between two cells
+#: measures which structure the knowledge comes from instead of how that
+#: knowledge enters the loss, which is the one thing the experiment isolates.
 #:
-#: ``lll`` e ``gll`` stanno di qua insieme a marking, gnn, seq e ai due
-#: ``checker_net``: la loro conoscenza e' la rete, proiettata su directly-follows
-#: per la locale e tensorizzata per la globale. Il prezzo e' che adesso
-#: dipendono dall'automa di raggiungibilita', quindi su una rete con troppe
-#: transizioni silenti cadono anche loro.
+#: ``lll`` and ``gll`` sit on this side together with marking, gnn, seq and the
+#: two ``checker_net``: their knowledge is the net, projected onto
+#: directly-follows for the local loss and tensorised for the global one. The
+#: price is that they now depend on the reachability automaton, so on a net with
+#: too many silent transitions they fall with it.
 NET_DFA_USERS = frozenset({"net", "axel_local", "axel_global"})
-#: Chi fa costruire l'automa. La maschera per stato non passa dalla proiezione,
-#: quindi le chiede l'automa e basta.
+#: Who has the automaton built. The per-state mask does not go through the
+#: projection, so it asks for the automaton and nothing else.
 AUTOMATON_USERS = NET_DFA_USERS | {"net_state"}
 
 CSV_FIELDS = (
     "dataset", "arch", "variant", "noise", "seed",
-    # --- task 1: next activity, un passo dal prefisso vero.
-    #     Ogni metrica di conformita' esiste in DUE copie: la stessa definizione,
-    #     calcolata contro due oggetti diversi. Senza suffisso e' il
-    #     directly-follows empirico, minato dalle tracce; con ``_net`` e' l'automa
-    #     di raggiungibilita' proiettato dalla rete di Petri. Entrambe valgono per
-    #     tutte e nove le varianti, baseline compresa: il metro deve essere lo
-    #     stesso su ogni riga, altrimenti le righe non si confrontano.
+    # --- task 1: next activity, one step from the true prefix.
+    #     Every conformance metric exists in TWO copies: the same definition,
+    #     computed against two different objects. Without a suffix it is the
+    #     empirical directly-follows relation, mined from the traces; with
+    #     ``_net`` it is the reachability automaton projected from the Petri net.
+    #     Both hold for all nine variants, baseline included: the yardstick has
+    #     to be the same on every row, or the rows do not compare.
     #
-    #     Non sono ridondanti, ed e' un fatto misurato e non una precauzione: su
-    #     Sepsis la rete ammette 199 celle e il DFA empirico 159, ma le due
-    #     maschere NON sono annidate -- l'inductive miner con
-    #     ``noise_threshold=0.2`` filtra il comportamento infrequente, quindi la
-    #     rete vieta anche coppie che nel log ci sono davvero. Un metodo
-    #     addestrato contro la rete misurato col metro empirico si vede contare
-    #     come violazioni proprio le generalizzazioni che gli abbiamo chiesto di
-    #     fare, e viceversa.
+    #     They are not redundant, and that is a measured fact and not a
+    #     precaution: on Sepsis the net admits 199 cells and the empirical DFA
+    #     159, but the two masks are NOT nested -- the inductive miner with
+    #     ``noise_threshold=0.2`` filters infrequent behaviour, so the net also
+    #     forbids pairs that really are in the log. A method trained against the
+    #     net and measured with the empirical yardstick has the very
+    #     generalisations it was asked to make counted as violations, and the
+    #     other way round.
     #
-    #     Le colonne ``_net`` restano vuote dove l'automa non si costruisce (BPIC15).
-    #     Le altre ci sono sempre, ed e' l'unico motivo per cui quel dataset resta
-    #     misurabile.
+    #     The ``_net`` columns stay empty where the automaton cannot be built.
+    #     The others are always there, and that is the only reason such a dataset
+    #     stays measurable.
     "accuracy", "macro_f1", "top3", "violation_rate", "forbidden",
     "violation_rate_net", "forbidden_net",
-    # --- task 2: suffix prediction, il modello rigenera dal proprio output.
-    #     Stessa coppia di metri sulle stesse tracce generate: contarle due volte
-    #     e' un giro di confronti su stringhe, non una seconda inferenza.
+    # --- task 2: suffix prediction, the model regenerates from its own output.
+    #     The same pair of yardsticks on the same generated traces: counting them
+    #     twice is a pass of string comparisons, not a second inference.
     "dl_similarity", "suffix_accuracy", "exact_match",
     "suffix_dfa_violation", "suffix_dfa_violation_net",
     "suffix_precedence_violation",
-    # Fitness per token replay della traccia COMPLETA (prefisso reale + suffisso
-    # generato) contro la rete di Petri: l'unica conformita' misurata sulla
-    # traccia intera invece che sulla singola transizione.
+    # Token-replay fitness of the WHOLE trace (real prefix + generated suffix)
+    # against the Petri net: the only conformance measured on the entire trace
+    # instead of on the single transition.
     "suffix_net_fitness",
     "n_suffix", "prefix_lengths",
-    # --- rumore, costo e provenienza. ``corrupted`` conta gli EVENTI la cui
-    #     etichetta e' stata sostituita; ``train_compliance`` e' la frazione di
-    #     tracce di train ancora conformi ai vincoli dopo l'iniezione -- la
-    #     Table 2 del paper, senza la quale l'asse rumore non e' interpretabile.
+    # --- noise, cost and provenance. ``corrupted`` counts the EVENTS whose
+    #     label was replaced; ``train_compliance`` is the fraction of training
+    #     traces still satisfying the constraints after the injection -- Table 2
+    #     of the paper, without which the noise axis cannot be read.
     "best_epoch", "corrupted", "train_compliance", "secs_per_epoch",
-    # --- costo. ``secs_train`` e' il muro dell'addestramento, ``secs_per_epoch``
-    #     lo stesso diviso per le epoche fatte. Gli altri quattro sono la parte
-    #     simbolica, che la rete neurale non paga: la scoperta della rete di
-    #     Petri, il DFA con la sua tensorizzazione, l'automa di raggiungibilita'
-    #     e il token replay delle partizioni held-out. ``secs_artifacts`` li
-    #     contiene tutti piu' la lettura del log.
+    # --- cost. ``secs_train`` is the wall time of training, ``secs_per_epoch``
+    #     the same divided by the epochs actually run. The other four are the
+    #     symbolic part, which the neural network does not pay: discovery of the
+    #     Petri net, the DFA with its tensorisation, the reachability automaton,
+    #     and the token replay of the held-out partitions. ``secs_artifacts``
+    #     holds all of them plus reading the log.
     "secs_train", "secs_petrinet", "secs_dfa", "secs_automaton",
     "secs_markings", "secs_artifacts",
-    # Su quale scheda ha girato la cella. Senza questa colonna i secondi non si
-    # possono leggere: un job e' un dataset ed e' un nodo, quindi le nove
-    # varianti di uno stesso dataset sono sempre confrontabili fra loro, ma due
-    # dataset finiti su schede diverse no.
+    # Which card the cell ran on. Without this column the seconds cannot be
+    # read: one job is one dataset and one node, so the nine variants of a given
+    # dataset are always comparable with each other, but two datasets that ended
+    # up on different cards are not.
     "gpu",
-    # --- riproducibilita'. ``knowledge_key`` e' l'impronta delle tracce da cui
-    #     si e' minato, ``net_fingerprint`` quella della rete che ne e' uscita.
-    #     Servono a poter VERIFICARE, non solo a sperare: due righe con la stessa
-    #     coppia hanno visto lo stesso oggetto simbolico, e una ricostruzione
-    #     futura si confronta con quello che c'e' scritto qui. Senza, un cambio
-    #     di rete e' invisibile finche' non lo si legge nei risultati.
-    #     ``artifacts_cached`` dice se in quella run gli oggetti sono stati
-    #     riletti da disco: quando vale 1 i secondi della parte simbolica sono
-    #     quelli della costruzione originale, non di questa run.
+    # --- reproducibility. ``knowledge_key`` is the fingerprint of the traces
+    #     mined from, ``net_fingerprint`` that of the net that came out. They
+    #     exist so that this can be VERIFIED and not merely hoped: two rows with
+    #     the same pair saw the same symbolic object, and a future reconstruction
+    #     is compared against what is written here. Without them, a change of net
+    #     is invisible until it shows up in the results. ``artifacts_cached``
+    #     says whether the objects were read back from disk in that run: when it
+    #     is 1, the seconds of the symbolic part are those of the original
+    #     construction, not of this run.
     "knowledge_key", "net_fingerprint", "artifacts_cached",
     "split", "knowledge", "vocab_scope", "train_frac", "val_frac", "test_frac",
 )
@@ -318,8 +232,8 @@ CSV_FIELDS = (
 
 def find_log(dataset: str) -> Path:
     folder = ROOT / "datasets" / dataset
-    # ``*.xes.gz`` sta in lista perche' i log pubblici arrivano spesso
-    # compressi; pm4py li legge senza scompattarli.
+    # ``*.xes.gz`` is in the list because public logs often arrive compressed;
+    # pm4py reads them without unpacking.
     for pattern in ("*.xes", "*.xes.gz", "*.csv", "*.csv.gz"):
         try:
             return next(folder.glob(pattern))
@@ -328,21 +242,16 @@ def find_log(dataset: str) -> Path:
     raise FileNotFoundError(f"No .xes o .csv log in {folder}")
 
 
+# Everything derived from a log, built once per dataset
 def build_dataset_artifacts(dataset: str, config, families: set[str],
                             masks_needed: set[str] = frozenset({"dfa"}),
                             cache_dir: Path | None = None) -> dict:
-    """Tutto cio' che deriva da un log, costruito una volta sola per dataset.
-
-    Con ``cache_dir`` gli oggetti minati vengono letti da disco se ci sono e
-    scritti se mancano (vedi ``nspm.process.artifact_store``). Con ``None`` si
-    mina sempre, che e' il comportamento di prima.
-    """
     print(f"[{dataset}] caricamento e costruzione artefatti...", flush=True)
-    # I tempi della parte simbolica, cronometrati pezzo per pezzo e riportati nel
-    # CSV accanto a quelli di addestramento. Servono a dire quanto costa la
-    # conoscenza, che e' una domanda diversa da quanto costa la rete neurale: sotto
-    # i protocolli a rumore sugli eventi questi secondi si ripagano a ogni livello
-    # di rumore, perche' le tracce cambiano e la conoscenza va riscoperta.
+    # The times of the symbolic part, timed piece by piece and reported in the
+    # CSV beside those of training. They exist to say what the knowledge costs,
+    # which is a different question from what the neural network costs: under the
+    # event-noise protocols these seconds are paid again at every noise level,
+    # because the traces change and the knowledge has to be rediscovered.
     timings = {"petrinet": 0.0, "dfa": 0.0, "automaton": 0.0,
                "markings": 0.0, "artifacts": 0.0}
     build_started = time.perf_counter()
@@ -350,11 +259,11 @@ def build_dataset_artifacts(dataset: str, config, families: set[str],
     events = read_log(find_log(dataset))
     splits = build_splits(events, config)
 
-    # Sotto ``vocabulary_scope="train"`` l'alfabeto viene dal solo blocco di
-    # training, quindi i case held-out con attivita' mai viste non sono ne'
-    # predicibili ne' valutabili e vanno scartati -- e' la convenzione del
-    # protocollo A (``drop_unseen`` in final_matrix.py). Sotto ``"all"`` non si
-    # scarta niente e l'insieme e' vuoto per costruzione.
+    # Under ``vocabulary_scope="train"`` the alphabet comes from the training
+    # block alone, so held-out cases with activities never seen are neither
+    # predictable nor scoreable and have to be dropped -- the convention of
+    # protocol A. Under ``"all"`` nothing is dropped and the set is empty by
+    # construction.
     if config.data.vocabulary_scope == "train":
         known = {a for trace in splits.train.values() for a in trace}
 
@@ -384,13 +293,13 @@ def build_dataset_artifacts(dataset: str, config, families: set[str],
     # (test, in questo protocollo).
     knowledge = knowledge_traces(splits, config)
 
-    # Gli oggetti minati vengono da disco quando ci sono gia'. La chiave e'
-    # l'impronta delle tracce di knowledge, quindi B e C dello stesso dataset
-    # non si toccano: minano da partizioni diverse e hanno chiavi diverse.
-    # Serve a poter RICARICARE una run -- rivalutare i checkpoint, rifare le
-    # figure, riprodurre un numero -- cosa che senza gli oggetti salvati non e'
-    # possibile, perche' l'inductive miner genera nomi nuovi a ogni chiamata e
-    # i vettori di marking dipendono dall'ordine dei posti.
+    # The mined objects come from disk when they are already there. The key is
+    # the fingerprint of the knowledge traces, so B and C of the same dataset do
+    # not touch: they mine from different partitions and have different keys.
+    # This is what makes it possible to RELOAD a run -- re-score the checkpoints,
+    # redo the figures, reproduce a number -- which without the saved objects is
+    # not possible, because the inductive miner generates fresh names at every
+    # call and the marking vectors depend on the order of the places.
     store_key = artifact_store.knowledge_fingerprint(knowledge, noise_threshold=0.2)
     store_file = artifact_store.cache_path(cache_dir, dataset, store_key) \
         if cache_dir is not None else None
@@ -400,10 +309,11 @@ def build_dataset_artifacts(dataset: str, config, families: set[str],
     started = time.perf_counter()
     if "petrinet" in cached:
         petrinet = cached["petrinet"]
-        # I secondi sono quelli della costruzione VERA, riletti dalla cache: la
-        # colonna deve dire quanto costa scoprire quella rete, non quanto costa
-        # aprire un file. Se riportasse zero, il costo della parte simbolica --
-        # che e' una delle metriche richieste -- sparirebbe al secondo lancio.
+        # The seconds are those of the REAL construction, read back from the
+        # cache: the column has to say what discovering that net costs, not what
+        # opening a file costs. If it reported zero, the cost of the symbolic
+        # part -- one of the required metrics -- would vanish on the second
+        # launch.
         timings["petrinet"] = cached.get("secs_petrinet", 0.0)
     else:
         petrinet = PetriNet.from_traces(knowledge)
@@ -430,10 +340,10 @@ def build_dataset_artifacts(dataset: str, config, families: set[str],
               f"{reachability.state_count} stati "
               f"({len(reachability.accepting)} accettanti)", flush=True)
     elif masks_needed & AUTOMATON_USERS:
-        # Stessa rete delle varianti marking/gnn/seq -- stesso oggetto, non una
-        # ricostruzione. ``alphabet`` tiene dentro le attivita' potate
-        # dall'inductive miner: sulla loro posizione la rete non dice niente, e
-        # non dire niente non significa vietarle.
+        # The same net as the marking/gnn/seq variants -- the same object, not a
+        # reconstruction. ``alphabet`` keeps in the activities pruned by the
+        # inductive miner: about their position the net says nothing, and saying
+        # nothing is not the same as forbidding them.
         reachability = ReachabilityAutomaton.from_process_net(
             petrinet, alphabet=vocab.activities
         )
@@ -442,26 +352,26 @@ def build_dataset_artifacts(dataset: str, config, families: set[str],
         print(f"[{dataset}] automa della rete: {reachability.state_count} stati "
               f"({len(reachability.accepting)} accettanti)", flush=True)
     if masks_needed & NET_DFA_USERS:
-        # Proiezione su directly-follows: perde la memoria dei marking, ma e'
-        # l'unica forma che una maschera sull'ultimo token accetta.
+        # Projection onto directly-follows: it loses the memory of the markings,
+        # but it is the only shape a mask on the last token accepts.
         net_dfa = reachability.to_process_dfa()
         masks["net"] = build_allowed_mask(net_dfa, vocab)
         print(f"[{dataset}] proiettato: {net_dfa.transition_count} transizioni | "
               f"celle ammesse: net {int(masks['net'].sum())} vs empirico "
               f"{int(mask.sum())} su {mask.numel()}", flush=True)
     if "net_state" in masks_needed:
-        # Nessuna proiezione: una riga per stato dell'automa, la memoria resta.
+        # No projection: one row per automaton state, the memory survives.
         state_mask = build_state_mask(reachability, vocab)
         print(f"[{dataset}] maschera per stato: {tuple(state_mask.shape)} "
               f"({int(state_mask.sum())} celle ammesse)", flush=True)
-    # I vincoli di precedenza danno la conformita' a livello di TRACCIA: il
-    # dfa_violation_rate conta i singoli passi directly-follows, questo dice se
-    # la traccia generata nel suo insieme rompe una regola di ordinamento.
+    # The precedence constraints give conformance at TRACE level:
+    # dfa_violation_rate counts the individual directly-follows steps, this says
+    # whether the generated trace as a whole breaks an ordering rule.
     #
-    # Anche questi vanno salvati: ``mine_precedence_constraints`` ha una
-    # non-determinismo noto fra processi, quindi due run possono minare vincoli
-    # diversi dalle stesse tracce e la colonna della violazione non sarebbe
-    # confrontabile fra loro.
+    # These are saved too: ``mine_precedence_constraints`` has a known
+    # nondeterminism across processes, so two runs can mine different
+    # constraints from the same traces and the violation column would not be
+    # comparable between them.
     if "constraints" in cached:
         constraints = cached["constraints"]
     else:
@@ -473,9 +383,9 @@ def build_dataset_artifacts(dataset: str, config, families: set[str],
         )
         fresh = True
 
-    # Si salva solo se qualcosa e' stato minato adesso. La cache cresce per
-    # aggiunta: un lancio senza automa scrive rete, DFA e vincoli, e il lancio
-    # successivo che l'automa lo chiede lo aggiunge senza rifare il resto.
+    # Saved only if something was mined just now. The cache grows by addition: a
+    # launch without the automaton writes net, DFA and constraints, and the next
+    # launch that does ask for the automaton adds it without redoing the rest.
     if store_file is not None and fresh:
         artifact_store.save(store_file, {
             "dataset": dataset, "knowledge_key": store_key,
@@ -485,8 +395,8 @@ def build_dataset_artifacts(dataset: str, config, families: set[str],
             "secs_automaton": timings["automaton"],
         })
 
-    # Prefissi: meta' della lunghezza mediana del test, +1, +2 -- calcolata sul
-    # test perche' e' li' che la suffix prediction viene valutata.
+    # Prefixes: half the median test length, +1, +2 -- computed on the test set
+    # because that is where suffix prediction is scored.
     lengths = sorted(len(t) for t in splits.test.values())
     median_length = lengths[len(lengths) // 2] if lengths else 0
     prefix_lengths = tuple(
@@ -494,27 +404,27 @@ def build_dataset_artifacts(dataset: str, config, families: set[str],
         if k >= 1
     )
 
-    # La loss globale di Axel ha bisogno dell'automa in forma tensoriale, per
-    # poterlo attraversare in modo differenziabile. E' la STESSA proiezione che
-    # legge ``checker_net``, solo scritta come matrici di transizione: stessa
-    # rete, stesso automa, stessa proiezione su directly-follows.
+    # The global loss needs the automaton in tensor form, so that it can be
+    # traversed differentiably. It is the SAME projection ``checker_net`` reads,
+    # only written as transition matrices: same net, same automaton, same
+    # projection onto directly-follows.
     tensor_dfa = gll_horizon = None
     started = time.perf_counter()
     if "axel_global" in masks_needed:
         tensor_dfa = TensorDFA.from_process_dfa(
             net_dfa, vocab.activities, resolve_device(config.training.device)
         )
-        # Quanto lontano prosegue il rollout. Axel arriva alla fine della traccia
-        # piu' lunga piu' un margine; qui i prefissi di addestramento partono
-        # intorno a meta' della lunghezza mediana, quindi la coda da generare e'
-        # dell'ordine dell'altra meta'. Tenerlo legato alla stessa scala del
-        # compito suffisso evita di pagare passi che nessuna traccia userebbe.
+        # How far the rollout runs on. The reference work goes to the end of the
+        # longest trace plus a margin; here the training prefixes start around
+        # half the median length, so the tail to generate is of the order of the
+        # other half. Tying it to the same scale as the suffix task avoids paying
+        # for steps no trace would use.
         gll_horizon = max(1, median_length // 2 + 2)
         print(f"[{dataset}] automa tensoriale: {tensor_dfa.n_states} stati x "
               f"{tensor_dfa.n_actions} azioni | rollout {gll_horizon} passi x "
               f"{AXEL_SAMPLES} campioni", flush=True)
-    # La tensorizzazione e' lo stesso automa del checker riscritto in matrici,
-    # quindi il suo costo sta con quello del DFA e non con quello della rete.
+    # Tensorisation is the checker's own automaton rewritten as matrices, so its
+    # cost belongs with the DFA's and not with the net's.
     timings["dfa"] += time.perf_counter() - started
 
     def logs(traces_map):
@@ -525,8 +435,8 @@ def build_dataset_artifacts(dataset: str, config, families: set[str],
         if "sequences" in families:
             out["sequences"] = base.with_markings(petrinet).with_marking_sequences(petrinet)
         if "stated" in families:
-            # Stesso modello della baseline: lo stato non e' un input, serve
-            # solo a indicizzare la maschera della loss.
+            # The same model as the baseline: the state is not an input, it
+            # only indexes the row of the loss mask.
             out["stated"] = base.with_automaton_states(reachability)
         return out
 
@@ -537,10 +447,10 @@ def build_dataset_artifacts(dataset: str, config, families: set[str],
                      for family, log in logs(traces_map).items()}
         for split_name, traces_map in (("val", splits.validation), ("test", splits.test))
     }
-    # Il token replay di validation e test. Quello del train non e' qui: ``logs``
-    # e' una chiusura richiamata a ogni cella, perche' il rumore cambia le tracce
-    # di addestramento e i marking vanno rigiocati. Questa colonna misura quindi
-    # il replay della parte held-out, che e' l'unica costruita una volta sola.
+    # Token replay of validation and test. The training one is not here:
+    # ``logs`` is a closure called at every cell, because the noise changes the
+    # training traces and the markings have to be replayed. This column therefore
+    # measures the replay of the held-out part, the only one built once.
     timings["markings"] = time.perf_counter() - started
 
     variants_train = len({tuple(t) for t in splits.train.values()})
@@ -565,17 +475,17 @@ def build_dataset_artifacts(dataset: str, config, families: set[str],
         "timings": timings,
         "vocab": vocab, "petrinet": petrinet, "mask": mask, "masks": masks,
         "reachability": reachability, "state_mask": state_mask,
-        # Le due impronte che finiscono nel CSV. ``knowledge_key`` dice da quali
-        # tracce si e' minato, ``net_fingerprint`` che rete ne e' uscita: due
-        # righe con le stesse impronte hanno visto lo stesso oggetto, due righe
-        # con impronte diverse no. E' cio' che permette di accorgersi che una
-        # rete e' cambiata, invece di scoprirlo dai numeri.
+        # The two fingerprints that end up in the CSV. ``knowledge_key`` says
+        # which traces were mined from, ``net_fingerprint`` which net came out:
+        # two rows with the same pair saw the same object, two rows with
+        # different pairs did not. That is what makes a changed net noticeable,
+        # rather than something discovered from the numbers.
         "knowledge_key": store_key,
         "net_fingerprint": artifact_store.net_fingerprint(petrinet),
         "cached": not fresh,
-        # L'automa della rete proiettato su directly-follows: e' la struttura
-        # contro cui si misurano le colonne ``_net``, ed e' ``None`` solo dove
-        # la rete non da' un automa finito.
+        # The net automaton projected onto directly-follows: it is the structure
+        # the ``_net`` columns are measured against, and it is ``None`` only
+        # where the net does not give a finite automaton.
         "net_dfa": net_dfa,
         "tensor_dfa": tensor_dfa, "gll_horizon": gll_horizon,
         "build_logs": logs, "eval_loaders": eval_loaders,
@@ -585,22 +495,17 @@ def build_dataset_artifacts(dataset: str, config, families: set[str],
     }
 
 
+# How the variant injects the knowledge into the loss
 def loss_arguments(mask_key: str, art: dict) -> dict:
-    """Come la variante inietta la conoscenza nella loss.
-
-    Restituisce sempre ``allowed_mask`` = la maschera che ``train_model``
-    registra come conformita' (empirica, cosi' la history resta leggibile), piu'
-    il modo e l'eventuale maschera indicizzata per stato dell'automa.
-    """
     if mask_key == "net_state":
         return {"logic_mode": "checker_state",
                 "allowed_mask": art["masks"][EVAL_MASK],
                 "logic_mask": art["state_mask"]}
     if mask_key == "axel_local":
-        # Stessa maschera di ``checker_net``: la conoscenza che entra nella loss
-        # e' la rete di Petri proiettata, la stessa che vedono marking, gnn e
-        # seq. ``allowed_mask`` resta quella empirica perche' e' la conformita'
-        # che ``train_model`` scrive nella history, non il vincolo -- come per
+        # The same mask as ``checker_net``: the knowledge entering the loss is
+        # the projected Petri net, the same one marking, gnn and seq see.
+        # ``allowed_mask`` stays the empirical one because it is the conformance
+        # ``train_model`` writes into the history, not the constraint -- as for
         # ``checker_state``.
         return {"logic_mode": "axel_local",
                 "allowed_mask": art["masks"][EVAL_MASK],
@@ -618,7 +523,7 @@ def loss_arguments(mask_key: str, art: dict) -> dict:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__,
+    parser = argparse.ArgumentParser(description="One cell of a noise grid: next activity and suffix, same run.",
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--protocol", choices=("A", "B", "C"), default="B",
                         help="B: split temporale, rumore sugli eventi, knowledge "
@@ -633,20 +538,20 @@ def main() -> None:
     parser.add_argument("--val-fraction", type=float, default=0.15)
     parser.add_argument("--test-fraction", type=float, default=0.15)
     parser.add_argument("--out-dir", default="temporal_matrix",
-                        help="sottocartella di runs/ per CSV e checkpoint")
+                        help="subdirectory of runs/ for the CSV and the checkpoints")
     parser.add_argument("--no-suffix", action="store_true",
-                        help="salta la suffix prediction (celle vuote nelle sue colonne)")
+                        help="skip suffix prediction (its columns stay empty)")
     parser.add_argument("--no-artifact-cache", action="store_true",
-                        help="mina sempre rete, DFA, automa e vincoli invece di "
-                             "riusare quelli salvati in runs/_artifacts")
+                        help="always mine net, DFA, automaton and constraints "
+                             "instead of reusing those saved in runs/_artifacts")
     parser.add_argument("--no-net-eval", action="store_true",
-                        help="non costruire l'automa della rete per la sola "
-                             "valutazione: le colonne _net restano vuote. Serve "
-                             "dove l'automa non e' finito (BPIC15), e va usato "
-                             "insieme alle varianti che non lo richiedono.")
+                        help="do not build the net automaton for evaluation only: "
+                             "the _net columns stay empty. Needed where the "
+                             "automaton does not terminate, and to be used "
+                             "with the variants that do not require it.")
     args = parser.parse_args()
 
-    # gate: seq resta fuori finche' i kind non esistono in models.py
+    # gate: seq stays out until the kinds exist in models.py
     variants = list(args.variants)
     if "seq" in variants and "gru_seq" not in get_args(ModelKind):
         print("NOTA: kind 'gru_seq' non ancora implementato -> variante 'seq' saltata.")
@@ -655,10 +560,10 @@ def main() -> None:
     out_dir = ROOT / "runs" / args.out_dir
     (out_dir / "ckpt").mkdir(parents=True, exist_ok=True)
     results_csv = out_dir / "results.csv"
-    # Fuori dalla cartella del protocollo, e apposta: la chiave e' l'impronta
-    # delle tracce di knowledge, quindi due esperimenti che minano dalle stesse
-    # tracce condividono gli oggetti anche se scrivono CSV diversi. Cancellare
-    # runs/noise_curve_* non butta via l'automa di BPIC15 da un'ora.
+    # Outside the protocol's own directory, and deliberately so: the key is the
+    # fingerprint of the knowledge traces, so two experiments mining from the
+    # same traces share the objects even when they write different CSVs.
+    # Deleting runs/noise_curve_* does not throw away an hour-long automaton.
     artifact_cache = None if args.no_artifact_cache else ROOT / "runs" / "_artifacts"
 
     done: set[tuple] = set()
@@ -669,35 +574,36 @@ def main() -> None:
             for row in reader:
                 done.add((row["dataset"], row["arch"], row["variant"],
                           float(row["noise"]), int(row["seed"])))
-        # Un CSV scritto con altre colonne non si puo' estendere in append: le
-        # righe nuove sarebbero disallineate rispetto all'header.
+        # A CSV written with different columns cannot be extended by append: the
+        # new rows would be misaligned with the header.
         if header != CSV_FIELDS:
-            print(f"ERRORE: {results_csv} ha un header diverso da quello atteso.\n"
-                  f"  mancanti: {[f for f in CSV_FIELDS if f not in header]}\n"
-                  f"  Usa --out-dir con una cartella nuova.")
+            print(f"ERROR: {results_csv} has a header different from the "
+                  f"expected one.\n"
+                  f"  missing: {[f for f in CSV_FIELDS if f not in header]}\n"
+                  f"  Use --out-dir with a fresh directory.")
             raise SystemExit(1)
-        print(f"resume: {len(done)} celle gia' nel CSV, verranno saltate")
+        print(f"resume: {len(done)} cells already in the CSV, they are skipped")
     else:
         with results_csv.open("w", newline="") as handle:
             csv.writer(handle).writerow(CSV_FIELDS)
 
-    # Il protocollo e' SOLO una scelta di config: quattro campi di DataConfig.
-    # Il resto della pipeline non sa quale dei due sta girando.
+    # The protocol is ONLY a choice of config: four fields of DataConfig. The
+    # rest of the pipeline does not know which of the two is running.
     if args.protocol == "B":
         base_config = temporal_protocol(
             validation_fraction=args.val_fraction, test_fraction=args.test_fraction
         )
     elif args.protocol == "C":
-        # B con la conoscenza presa dal train invece che dal test, e nient'altro
-        # di diverso: stesso split temporale, stesso vocabolario, stesso rumore
-        # sugli eventi. Serve a isolare la sorgente della conoscenza, che nel
-        # paper di Mezini et al. e' dichiarata come il test set -- quasi
-        # certamente un refuso, e questo protocollo lo misura invece di
-        # discuterlo.
-        # ``temporal_protocol`` accetta come override solo batch_size e
-        # num_workers: gli altri campi li scarta in silenzio, ed e' giusto cosi'
-        # perche' e' la funzione che DEFINISCE il protocollo. Quindi il cambio si
-        # fa dopo, in chiaro, su un campo solo.
+        # B with the knowledge taken from the training partition instead of the
+        # test one, and nothing else different: same temporal split, same
+        # vocabulary, same noise on the events. It isolates the source of the
+        # knowledge, which Mezini et al. declare to be the test set -- almost
+        # certainly a slip, and this protocol measures it instead of arguing
+        # about it.
+        # ``temporal_protocol`` accepts only batch_size and num_workers as
+        # overrides: it drops the other fields silently, and rightly so, because
+        # it is the function that DEFINES the protocol. So the change is made
+        # afterwards, in the open, on a single field.
         temporal = temporal_protocol(
             validation_fraction=args.val_fraction, test_fraction=args.test_fraction
         )
@@ -717,20 +623,19 @@ def main() -> None:
                       recurrent_layers=RECURRENT_LAYERS))
     data = base_config.data
     device = resolve_device(base_config.training.device)
-    # ``cpu`` quando non c'e' scheda: e' un valore come un altro, e dice da solo
-    # perche' quella riga ha dei secondi fuori scala rispetto alle altre.
+    # ``cpu`` when there is no card: a value like any other, and it says by
+    # itself why that row has seconds out of scale with the others.
     gpu_name = (torch.cuda.get_device_name(device)
                 if getattr(device, "type", str(device)) == "cuda" else "cpu")
     families = {VARIANT_SPEC[v][2] for v in variants}
-    # La maschera di valutazione serve sempre: e' quella su cui si misurano
-    # forbidden e violation_rate di OGNI variante.
+    # The evaluation mask is always needed: it is the one forbidden mass and
+    # violation rate are measured on for EVERY variant.
     masks_needed = {VARIANT_SPEC[v][3] for v in variants} | {EVAL_MASK}
-    # La maschera della rete serve alla VALUTAZIONE di tutte e nove le varianti,
-    # non solo a chi la usa nella loss: e' il metro primario, e deve essere lo
-    # stesso oggetto per ogni riga. Quindi la si chiede sempre, anche quando
-    # nessuna variante la userebbe -- per la baseline il numero e' comunque
-    # informativo, dice quanto comportamento fuori dalla rete produce un modello
-    # a cui la rete non e' mai stata mostrata.
+    # The net mask is needed to EVALUATE all nine variants, not only by those
+    # that use it in the loss: it is the primary yardstick, and it has to be the
+    # same object on every row. So it is always asked for, even when no variant
+    # would use it -- for the baseline the number is informative anyway, it says
+    # how much off-net behaviour a model that was never shown the net produces.
     if not args.no_net_eval:
         masks_needed |= {"net"}
 
@@ -754,11 +659,11 @@ def main() -> None:
         if not pending:
             print(f"[{dataset}] completo, salto")
             continue
-        # Sotto rumore sugli eventi, preparare un livello costa quanto
-        # addestrarne tutte le varianti (i marking si rigiocano da capo). Chi
-        # riprende una matrice interrotta non deve ripagare quel costo per i
-        # livelli gia' chiusi, quindi le coppie (noise, seed) ancora da fare si
-        # decidono qui, prima di toccare i log.
+        # Under event noise, preparing a level costs as much as training all its
+        # variants (the markings are replayed from scratch). Whoever resumes an
+        # interrupted grid must not pay that cost again for the levels already
+        # closed, so the (noise, seed) pairs still to do are decided here, before
+        # touching the logs.
         pending_levels = {(cell[3], cell[4]) for cell in pending}
 
         art = build_dataset_artifacts(dataset, base_config, families, masks_needed,
@@ -766,19 +671,19 @@ def main() -> None:
         vocab, petrinet = art["vocab"], art["petrinet"]
         n_places = len(petrinet.places)
 
-        # Due regimi di rumore, e cambiano anche il COSTO, non solo l'effetto.
+        # Two noise regimes, and they change the COST too, not only the effect.
         #
-        # ``event`` corrompe le TRACCE, quindi i marking vanno rigiocati a ogni
-        # livello: i log si costruiscono una volta per (noise, seed) e si
-        # riusano su tutte le arch x varianti della cella -- la proprieta'
-        # twin-run. A rumore 0 le tracce sono quelle pulite, uguali per ogni
-        # seed, quindi una sola volta.
+        # ``event`` corrupts the TRACES, so the markings have to be replayed at
+        # every level: the logs are built once per (noise, seed) and reused
+        # across all the arch x variant combinations of the cell -- the twin-run
+        # property. At noise 0 the traces are the clean ones, the same for every
+        # seed, so once only.
         #
-        # ``target`` lascia le tracce intatte e sostituisce solo l'etichetta da
-        # predire: i marking non cambiano mai, quindi i log si costruiscono UNA
-        # volta per dataset e si corrompono i target sulla copia. La conformita'
-        # del train resta quella pulita a ogni livello -- ed e' esattamente il
-        # motivo per cui questo rumore morde molto meno.
+        # ``target`` leaves the traces intact and replaces only the label to be
+        # predicted: the markings never change, so the logs are built ONCE per
+        # dataset and the targets are corrupted on the copy. Training compliance
+        # stays the clean one at every level -- which is exactly why this noise
+        # bites so much less.
         event_noise = base_config.data.noise_model == "event"
         noisy_cache: dict = {}
         clean_logs = None if event_noise else art["build_logs"](art["train_traces"])
@@ -802,7 +707,7 @@ def main() -> None:
                 ratio = compliance_ratio(art["constraints"], traces.values())
                 print(f"[{dataset}] noise {noise:.2f} seed {seed}: {changed} eventi corrotti, "
                       f"conformita' del train {ratio:.3f} -- ricostruzione marking...", flush=True)
-                noisy_cache.clear()  # una chiave alla volta: i log sono grossi
+                noisy_cache.clear()  # one key at a time: the logs are large
                 noisy_cache[key] = (art["build_logs"](traces), changed, ratio)
             return noisy_cache[key]
 
@@ -813,8 +718,8 @@ def main() -> None:
                     print(f"[{dataset}] noise {noise:.2f} seed {seed}: gia' completo, "
                           f"salto la ricostruzione", flush=True)
                     continue
-                # twin-run: dentro una cella (dataset, seed, noise) tutte le
-                # varianti vedono LO STESSO log corrotto
+                # twin-run: inside a cell (dataset, seed, noise) every variant
+                # sees THE SAME corrupted log
                 train_logs, corrupted, ratio = noisy_logs(noise, seed)
                 for arch in args.archs:
                     for variant in variants:
@@ -835,12 +740,12 @@ def main() -> None:
                             checkpoint_path=out_dir / "ckpt" /
                                 f"{dataset}_{kind}_{variant}_n{int(noise*100)}_s{seed}.pt",
                             use_logic=use_logic,
-                            # Quale conoscenza entra nella loss, e come.
+                            # Which knowledge enters the loss, and how.
                             **loss_arguments(mask_key, art),
-                            # Il marking e' una FEATURE: dipende dall'encoder
-                            # (il suffisso del kind), non dalla famiglia di dati
-                            # -- la famiglia "stated" porta gli stati per la
-                            # loss ma il modello resta quello della baseline.
+                            # The marking is a FEATURE: it depends on the
+                            # encoder (the kind suffix), not on the data family
+                            # -- the "stated" family carries the states for the
+                            # loss but the model stays the baseline's.
                             marking_dim=n_places if suffix else 0,
                             adjacency=petrinet.adjacency_matrices if suffix in GRAPH_SUFFIXES else None,
                         )
@@ -851,16 +756,16 @@ def main() -> None:
                         eval_res = evaluate_model(
                             model=train_res.model,
                             data_loader=art["eval_loaders"]["test"][family],
-                            # La maschera empirica, uguale per tutte le righe:
-                            # e' il metro che esiste sempre, anche dove l'automa
-                            # della rete non si costruisce.
+                            # The empirical mask, the same on every row: it is
+                            # the yardstick that always exists, even where the
+                            # net automaton cannot be built.
                             allowed_mask=art["masks"][EVAL_MASK].to(device),
                             device=device,
                         )
-                        # Lo stesso modello contro l'automa della rete. E' un
-                        # secondo passaggio sul test set, non un secondo
-                        # addestramento: rispetto ai minuti del training e'
-                        # rumore. Assente solo quando la rete non da' un automa.
+                        # The same model against the net automaton. It is a
+                        # second pass over the test set, not a second training:
+                        # next to the minutes of training it is noise. Absent
+                        # only when the net gives no automaton.
                         if "net" in art["masks"]:
                             eval_net = evaluate_model(
                                 model=train_res.model,
@@ -873,11 +778,11 @@ def main() -> None:
                         else:
                             net_cells = ["", ""]
 
-                        # --- task 2: suffix prediction. Decoding LIBERO: la
-                        # allowed_mask azzererebbe per costruzione il
-                        # dfa_violation, rendendo la conformita' non
-                        # informativa. Le varianti con marking hanno bisogno
-                        # della rete per rigiocare le proprie predizioni.
+                        # --- task 2: suffix prediction. FREE decoding: the
+                        # allowed_mask would zero the dfa_violation by
+                        # construction, making conformance uninformative. The
+                        # marking variants need the net to replay their own
+                        # predictions.
                         if args.no_suffix:
                             suffix_cells = ["", "", "", "", "", "", "", "", ""]
                         else:
@@ -887,11 +792,11 @@ def main() -> None:
                                 prefix_lengths=art["prefix_lengths"],
                                 constraints=art["constraints"],
                                 petrinet=petrinet if suffix else None,
-                                # La fitness si misura per OGNI variante: e' una
-                                # proprieta' della traccia prodotta, non del
-                                # modello che l'ha prodotta.
+                                # Fitness is measured for EVERY variant: it is
+                                # a property of the trace produced, not of the
+                                # model that produced it.
                                 fitness_net=petrinet,
-                                # Il secondo metro sulle stesse tracce generate.
+                                # The second yardstick on the same generated traces.
                                 automaton_net=art["net_dfa"],
                             )
                             net_violation = ("" if art["net_dfa"] is None
@@ -935,7 +840,7 @@ def main() -> None:
                               f"acc {eval_res.accuracy:.4f} forbidden {eval_res.forbidden_mass:.4f}"
                               f"{dl_note} ({completed}/{total})", flush=True)
 
-    # ---- riepilogo dal CSV completo (incluse run di lanci precedenti) -------
+    # ---- summary from the complete CSV (earlier launches included) ----------
     with results_csv.open() as handle:
         rows = list(csv.DictReader(handle))
 

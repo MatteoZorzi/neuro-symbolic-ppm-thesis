@@ -1,30 +1,4 @@
-"""Whole-trace (suffix) prediction and its conformance/accuracy metrics.
-
-The next-activity task in :mod:`learning.evaluation` scores a single step from a
-ground-truth prefix. This module evaluates the harder PPM *suffix-prediction*
-task (Di Francescomarino, Donadello & Maggi, 2026, Ch. 5): given a prefix, the
-model **autoregressively generates the remaining trace** from its own previous
-predictions, so errors compound. The whole predicted trace is then scored against
-the ground truth with the field-standard **Damerau-Levenshtein similarity**.
-
-Two generation setups are provided:
-
-* :func:`evaluate_trace_from_start` -- generate the entire trace from ``START``
-  (the headline "whole predicted trace" story);
-* :func:`evaluate_suffix_prediction` -- generate the suffix after several prefix
-  lengths (the robust quantitative protocol, many samples per trace).
-
-Both accept an optional ``allowed_mask`` that forbids directly-follows-illegal
-next activities at every decoding step. This is the book's **output refinement**
-mechanism (Ch. 7, mechanism A): symbolic knowledge applied *at inference time*
-with no retraining, complementing the logic-in-loss models (checker/embedder).
-
-Because the sequence models output activity classes only (no end-of-sequence
-token, which the book notes a full suffix predictor needs, Ch. 5), generation is
-**length-conditioned**: exactly ``len(true continuation)`` steps are produced.
-This isolates ordering accuracy from length prediction and is stated as a
-limitation rather than hidden.
-"""
+# Whole-trace (suffix) prediction and its conformance/accuracy metrics
 
 from __future__ import annotations
 
@@ -39,15 +13,10 @@ from ..process.automaton import START, ProcessDFA
 from ..process.ltl_constraints import PrecedenceConstraint
 
 
+# Optimal string-alignment Damerau-Levenshtein distance
 def damerau_levenshtein_distance(
     a: Sequence[str], b: Sequence[str]
 ) -> int:
-    """Optimal string-alignment Damerau-Levenshtein distance.
-
-    Counts insertions, deletions, substitutions and adjacent transpositions
-    between two activity sequences. This is the distance underlying the standard
-    suffix-prediction similarity metric in predictive process monitoring.
-    """
 
     a = list(a)
     b = list(b)
@@ -83,8 +52,8 @@ def damerau_levenshtein_distance(
     return distance[n][m]
 
 
+# 1 - normalised Damerau-Levenshtein distance (1.0 = identical)
 def dl_similarity(a: Sequence[str], b: Sequence[str]) -> float:
-    """1 - normalised Damerau-Levenshtein distance (1.0 = identical)."""
 
     if not a and not b:
         return 1.0
@@ -92,20 +61,8 @@ def dl_similarity(a: Sequence[str], b: Sequence[str]) -> float:
     return 1.0 - damerau_levenshtein_distance(a, b) / longest
 
 
+# Keeps the symbolic marking channel in step with an autoregressive rollout
 class _MarkingRollout:
-    """Keeps the symbolic marking channel in step with an autoregressive rollout.
-
-    The marking variants read a Petri-net state alongside the token prefix, so
-    free-running generation has to *replay its own predictions* through the net:
-    at training time the marking comes from the ground-truth prefix, at
-    generation time it can only come from what the model just produced.
-
-    The replay convention is the one :meth:`PrefixLog.with_marking_sequences`
-    uses -- ``(initial, m_1, ..., m_k)`` for a k-event prefix, one entry per
-    token including ``START`` -- so an encoder sees the same shapes it was
-    trained on. Markings are appended one per generated step instead of
-    recomputing the whole chain, keeping the rollout O(L^2) rather than O(L^3).
-    """
 
     def __init__(self, petrinet, expects_sequences: bool) -> None:
         self._petrinet = petrinet
@@ -130,6 +87,7 @@ class _MarkingRollout:
         return torch.tensor([self._markings[-1]], dtype=torch.float32, device=device)
 
 
+# Greedily roll out ``n_steps`` activities, feeding predictions back in
 @torch.no_grad()
 def generate_continuation(
     model: nn.Module,
@@ -140,17 +98,6 @@ def generate_continuation(
     allowed_mask: torch.Tensor | None = None,
     petrinet=None,
 ) -> list[str]:
-    """Greedily roll out ``n_steps`` activities, feeding predictions back in.
-
-    When ``allowed_mask`` is supplied (shape ``[n_tokens, n_classes]``), the
-    classes forbidden by the directly-follows automaton for the current last
-    token are masked before the argmax -- the inference-time *output-refinement*
-    guardrail. Without it, decoding is unconstrained (free-running).
-
-    ``petrinet`` is required by models carrying a ``marking_encoder``: their
-    symbolic channel has to be replayed from the generated prefix at every step
-    (see :class:`_MarkingRollout`). Plain models ignore it.
-    """
 
     model.eval()
     token_to_id = vocabulary.token_to_id
@@ -189,9 +136,9 @@ def generate_continuation(
     return generated
 
 
+# Aggregate whole-trace metrics plus a few example traces for display
 @dataclass
 class TracePredictionResult:
-    """Aggregate whole-trace metrics plus a few example traces for display."""
 
     setup: str
     n_examples: int
@@ -200,22 +147,22 @@ class TracePredictionResult:
     exact_match_rate: float
     dfa_violation_rate: float
     precedence_violation_rate: float
-    #: Le stesse transizioni illegali, ma contate contro l'automa proiettato
-    #: dalla rete di Petri invece che contro il directly-follows empirico. NaN
-    #: quando l'automa della rete non viene passato al valutatore.
+    #: The same illegal transitions, but counted against the automaton projected
+    #: from the Petri net instead of the empirical directly-follows one. NaN when
+    #: the net automaton is not handed to the evaluator.
     #:
-    #: Serve perche' le due strutture non vietano le stesse cose: la proiezione
-    #: della rete e' una sovra-approssimazione, quindi ammette comportamento mai
-    #: osservato ma strutturalmente possibile. Un metodo addestrato contro la
-    #: rete va misurato contro la rete, altrimenti gli si contano come
-    #: violazioni proprio le generalizzazioni che gli abbiamo chiesto di fare.
+    #: It exists because the two structures do not forbid the same things: the
+    #: projection of the net is an over-approximation, so it admits behaviour
+    #: never observed but structurally possible. A method trained against the net
+    #: has to be measured against the net, or the very generalisations it was
+    #: asked to make get counted as violations.
     dfa_violation_rate_net: float = float("nan")
-    #: Fitness media, per token replay, della traccia COMPLETA (prefisso reale +
-    #: suffisso generato) contro la rete di Petri. NaN quando la rete non viene
-    #: passata al valutatore. E' l'unica metrica di conformita' che guarda la
-    #: traccia come oggetto intero invece che passo per passo: il
-    #: ``dfa_violation_rate`` conta le transizioni illegali, questa dice quanto
-    #: la rete riesce a rigiocare quello che il modello ha prodotto.
+    #: Mean token-replay fitness of the WHOLE trace (real prefix + generated
+    #: suffix) against the Petri net. NaN when the net is not handed to the
+    #: evaluator. It is the only conformance metric that looks at the trace as a
+    #: whole object rather than step by step: ``dfa_violation_rate`` counts the
+    #: illegal transitions, this one says how much of what the model produced the
+    #: net manages to replay.
     net_fitness: float = float("nan")
     examples: list[dict] = field(default_factory=list)
 
@@ -231,22 +178,10 @@ class TracePredictionResult:
         }
 
 
+# (violations, transitions) for the model-generated part of the trace
 def _generated_dfa_violations(
     automaton: ProcessDFA, prefix: Sequence[str], generated: Sequence[str]
 ) -> tuple[int, int]:
-    """(violations, transitions) for the model-generated part of the trace.
-
-    A transition is a violation only when its source state is *constrained* --
-    i.e. it has at least one observed real-activity successor -- and the chosen
-    activity is not among them. Transitions out of unconstrained states (seen
-    only at trace end, or never seen as a source) impose no directly-follows
-    rule, so they are legal by definition. This matches exactly what the
-    inference-time decoding mask can enforce (see
-    :meth:`ProcessDFA.allowed_activities` and
-    :func:`learning.logic.build_allowed_mask`), so masked decoding drives this
-    rate to 0 by construction, and it is the same notion of "DFA violation"
-    used for the single-step task in :mod:`learning.evaluation`.
-    """
 
     previous = prefix[-1] if prefix else START
     violations = 0
@@ -260,10 +195,10 @@ def _generated_dfa_violations(
     return violations, transitions
 
 
+# True if any *relevant* mined precedence rule is broken by the trace
 def _violates_precedence(
     constraints: Sequence[PrecedenceConstraint], trace: Sequence[str]
 ) -> bool:
-    """True if any *relevant* mined precedence rule is broken by the trace."""
 
     present = set(trace)
     for constraint in constraints:
@@ -292,10 +227,10 @@ def _score_records(
     exact = 0
     dfa_violations = 0
     dfa_transitions = 0
-    # Le tracce sono gia' generate: passarle su un secondo automa e' un giro di
-    # confronti su stringhe, non una seconda inferenza. Misurare contro entrambe
-    # le strutture costa quindi quasi niente, e non obbliga a scegliere quale
-    # delle due sia "il" metro.
+    # The traces are already generated: running them past a second automaton is
+    # a pass of string comparisons, not a second inference. Measuring against
+    # both structures therefore costs almost nothing, and does not force a choice
+    # of which of the two is "the" yardstick.
     net_violations = 0
     net_transitions = 0
     precedence_violations = 0
@@ -328,8 +263,8 @@ def _score_records(
         if constraints:
             precedence_violations += int(_violates_precedence(constraints, full_trace))
 
-    # Una sola chiamata su tutte le tracce ricostruite: e' una metrica, non una
-    # feature, quindi qui il replay in blocco e' la forma giusta.
+    # A single call over all the reconstructed traces: this is a metric, not a
+    # feature, so bulk replay is the right shape here.
     net_fitness = float("nan")
     if petrinet is not None:
         scores = petrinet.trace_fitness(full_traces)
@@ -354,6 +289,7 @@ def _score_records(
     )
 
 
+# Generate each whole trace from ``START`` and score it against the truth
 def evaluate_trace_from_start(
     model: nn.Module,
     traces: Mapping[str, Sequence[str]],
@@ -366,7 +302,6 @@ def evaluate_trace_from_start(
     n_examples: int = 5,
     petrinet=None,
 ) -> TracePredictionResult:
-    """Generate each whole trace from ``START`` and score it against the truth."""
 
     start_id = vocabulary.token_to_id[START]
     records: list[dict] = []
@@ -384,6 +319,7 @@ def evaluate_trace_from_start(
                           petrinet)
 
 
+# Generate the suffix after each prefix length and score it (PPM protocol)
 def evaluate_suffix_prediction(
     model: nn.Module,
     traces: Mapping[str, Sequence[str]],
@@ -399,21 +335,6 @@ def evaluate_suffix_prediction(
     fitness_net=None,
     automaton_net: ProcessDFA | None = None,
 ) -> TracePredictionResult:
-    """Generate the suffix after each prefix length and score it (PPM protocol).
-
-    ``petrinet`` serve alla GENERAZIONE: solo le varianti con marking ne hanno
-    bisogno, per rigiocare le proprie predizioni durante il rollout.
-    ``fitness_net`` serve alla MISURA, e vale per ogni variante -- la fitness
-    della traccia ricostruita contro la rete non dipende da come il modello e'
-    fatto. Sono due parametri distinti perche' passare la rete a un modello che
-    non la usa cambierebbe il percorso di generazione.
-
-    ``automaton_net`` e' un SECONDO metro, non un sostituto: le stesse tracce
-    generate vengono contate anche contro l'automa proiettato dalla rete, e il
-    risultato finisce in ``dfa_violation_rate_net``. Le due strutture non
-    vietano le stesse cose, quindi tenerle entrambe evita di dover dichiarare
-    quale sia quella giusta.
-    """
 
     start_id = vocabulary.token_to_id[START]
     records: list[dict] = []

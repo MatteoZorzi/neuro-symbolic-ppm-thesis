@@ -1,4 +1,4 @@
-"""Empirical deterministic automaton derived from training traces."""
+# Empirical deterministic automaton derived from training traces
 
 from __future__ import annotations
 
@@ -12,13 +12,9 @@ START = "<START>"
 END = "<END>"
 
 
+# A directly-follows automaton used as a next-action constraint
 @dataclass(frozen=True)
 class ProcessDFA:
-    """A directly-follows automaton used as a next-action constraint.
-
-    The automaton is learned only from training traces. This avoids leaking
-    validation or test transitions into the logic regulariser.
-    """
 
     allowed_next: Mapping[str, frozenset[str]]
     activities: tuple[str, ...]
@@ -69,18 +65,8 @@ class ProcessDFA:
     def is_allowed(self, previous: str, following: str) -> bool:
         return following in self.allowed_next.get(previous, frozenset())
 
+    # Real-activity successors observed after ``previous`` (excludes START/END)
     def allowed_activities(self, previous: str) -> frozenset[str]:
-        """Real-activity successors observed after ``previous`` (excludes START/END).
-
-        This is the single source of truth for "which next *activities* are
-        legal" shared by the inference-time decoding mask
-        (:func:`learning.logic.build_allowed_mask`) and the generated-trace
-        conformance metric (whole-trace prediction). A state whose only observed
-        successor is ``END`` (seen only at trace end) or that was never seen as a
-        source returns the empty set: it imposes **no constraint** on the next
-        activity, so neither the mask nor the violation metric may penalise it.
-        Keeping both consumers on this method prevents them from drifting apart.
-        """
 
         return frozenset(
             action
@@ -88,8 +74,8 @@ class ProcessDFA:
             if action not in (START, END)
         )
 
+    # Return whether every transition, including start/end, was observed
     def accepts(self, trace: Sequence[str]) -> bool:
-        """Return whether every transition, including start/end, was observed."""
 
         if not trace:
             return False
@@ -100,8 +86,8 @@ class ProcessDFA:
             previous = activity
         return self.is_allowed(previous, END)
 
+    # Fraction of evaluated transitions represented by this automaton
     def transition_coverage(self, traces: Iterable[Sequence[str]]) -> float:
-        """Fraction of evaluated transitions represented by this automaton."""
 
         covered = 0
         total = 0
@@ -142,8 +128,8 @@ class ProcessDFA:
             end_actions=frozenset(data["end_actions"]),
         )
 
+    # Create a NetworkX graph lazily, keeping it an optional dependency
     def to_networkx(self):
-        """Create a NetworkX graph lazily, keeping it an optional dependency."""
 
         import networkx as nx
 

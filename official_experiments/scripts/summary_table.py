@@ -1,25 +1,5 @@
-"""Recompute the summary table of \\cref{sec:exp-results} from the grids.
+# Recompute the summary table of \cref{sec:exp-results} from the grids
 
-Every model against the baseline, on the four metrics, under both protocols.
-The chapter shows the levels in the figures, which keep the logs in their own
-panels; what a table can carry is the difference against the baseline, because
-a difference is comparable across logs where a level is not.
-
-A cell is one log at one noise level. Inside the cell the five seeds are
-reduced to their median before anything else touches the number, and the model
-is paired against the baseline of that same cell. Four logs and nine levels
-make thirty-six cells per protocol.
-
-Two numbers per model and metric. The percentage is the mean difference over
-the cells, relative to the mean of the baseline over the same cells; it keeps
-the sign of the metric, so on the two conformance metrics a negative percentage
-is an improvement. The fraction counts the cells in which the model is at least
-as good as the baseline. A tie counts for the model: on a conformance metric a
-pair is often equal, either at zero or at the same non-zero rate, and charging
-those cells to the model would understate one that never loses.
-
-    python official_experiments/scripts/summary_table.py
-"""
 from __future__ import annotations
 
 import argparse
@@ -57,15 +37,15 @@ METRICS = {
 }
 
 
+# Median over the seeds, one row per protocol, log, model and level
 def cells(grid: pd.DataFrame, metric: str) -> pd.DataFrame:
-    """Median over the seeds, one row per protocol, log, model and level."""
     return (grid.groupby(["protocol", "dataset", "noise", "variant"],
                          observed=True)[metric].median()
             .unstack("variant"))
 
 
+# The percentage and the count, per protocol, model and metric
 def compare(grid: pd.DataFrame) -> pd.DataFrame:
-    """The percentage and the count, per protocol, model and metric."""
     rows = {}
     for metric, (column, direction) in METRICS.items():
         paired = cells(grid, metric)
@@ -88,7 +68,8 @@ def compare(grid: pd.DataFrame) -> pd.DataFrame:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description="Recompute the summary table of the results chapter from the grids.")
     parser.parse_args()
 
     grid = pd.read_csv(GRID)

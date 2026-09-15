@@ -1,41 +1,5 @@
-"""Le due loss di Axel (``nesy-suffix-prediction-dfa``), portate sul nostro setup.
-
-Codice di riferimento: ``src/loss/local_loss.py`` e ``src/loss/global_loss.py``
-del suo repo. La sostanza delle due loss e' sua; qui cambia solo cio' che DEVE
-cambiare perche' l'esperimento e' diverso.
-
-Cosa cambia, e perche'
-----------------------
-1. **L'automa.** Da lui nasce da una formula LTLf compilata con MONA
-   (``ltlf2dfa``); qui e' l'automa di raggiungibilita' della rete di Petri
-   scoperta dal log, lo stesso che legge ``checker_net``. Cosi' i due metodi
-   vedono **la stessa conoscenza** di tutte le altre varianti e il confronto e'
-   fra canali, non fra fonti.
-
-   CORRETTO il 02/09/2026: questa nota diceva "il directly-follows empirico gia'
-   usato dal ``checker``". Era vero alla nascita del modulo (24/08) e superato
-   dal **27/08**, quando le due loss sono passate alla rete perche' due metodi
-   sono confrontabili solo se vedono lo STESSO oggetto simbolico. Il cablaggio
-   sta in ``official_experiments/scripts/matrix.py``, dove ``axel_local`` e ``axel_global`` sono
-   dentro ``NET_DFA_USERS`` insieme a ``net``. Il termine di paragone diretto e'
-   ``checker_net``, non ``checker`` -- come gia' documentato in ``MODELS.md``
-   §10 e ``CODE_DOCUMENTATION.md`` §4.9, rimasto sbagliato solo qui.
-   Conta perche' col ribaltamento della tesi il DFG empirico esce dal testo:
-   se queste due loss ci girassero sopra, meta' dei metodi riportati leggerebbe
-   un oggetto che la tesi non descrive.
-2. **La forma del batch.** I suoi esempi sono tracce intere con un target per
-   passo, i nostri sono prefissi con un solo target. La loss locale collassa
-   quindi da "per passo" a "per esempio": e' la stessa quantita', misurata dove
-   il nostro modello fa la sua unica predizione.
-3. **Gli indici.** Da lui input e output vivono nello stesso spazio; qui no --
-   i token di input sono ``(PAD, START, *attivita')`` e le classi di output solo
-   le attivita'. Lo scarto e' un offset costante, ricavato invece che cablato.
-
-Cosa NON cambia: la struttura delle due penalita', il ruolo di ``alpha`` come
-miscelatore fra supervisione e logica, il Gumbel-Softmax con la sua temperatura,
-e il fatto che la globale legga l'accettazione dell'automa alla fine di un
-rollout invece che la massa proibita a un passo.
-"""
+# The two logic losses of Mezini et al. (nesy-suffix-prediction-dfa), ported to
+# this setup: the local one at one step, the global one over a whole rollout.
 
 from __future__ import annotations
 
@@ -48,16 +12,9 @@ import torch.nn.functional as F
 from ..process.automaton import END, START, ProcessDFA
 
 
+# Our ``ProcessDFA`` in tensor form, differentiable
 @dataclass(frozen=True)
 class TensorDFA:
-    """Il nostro ``ProcessDFA`` in forma tensoriale, derivabile.
-
-    Serve solo alla loss globale: la locale legge una maschera booleana e non ha
-    bisogno di transizioni differenziabili. Gli stati sono
-    ``0 = START``, ``1..n = attivita'``, ``n+1 = END``, ``n+2 = trap``; le azioni
-    sono le attivita' piu' un simbolo ``end`` finale. ``END`` e trap sono
-    assorbenti, come nel DeepDFA di Axel.
-    """
 
     transitions: torch.Tensor      # (n_actions, n_states, n_states)
     accepting: torch.Tensor        # (n_states,) 1.0 sugli stati accettanti
@@ -90,8 +47,8 @@ class TensorDFA:
         wire(START, 0)
         for activity in activities:
             wire(activity, state_of[activity])
-        # Assorbenti: una volta accettata o finita nel trap, la traccia non si
-        # muove piu'. Senza questo il rollout uscirebbe dalla matrice.
+        # Absorbing: once accepted or trapped, the trace does not move again.
+        # Without this the rollout would walk off the matrix.
         for absorbing in (end_state, trap_state):
             transitions[:, absorbing, absorbing] = 1.0
 
@@ -99,15 +56,8 @@ class TensorDFA:
         accepting[end_state] = 1.0
         return cls(transitions, accepting, n_states, n_actions, end_action, trap_state)
 
+    # One step over distributions: ``state`` (B, S), ``action`` (B, A) -> (B, S)
     def step(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
-        """Un passo su distribuzioni: ``state`` (B, S), ``action`` (B, A) -> (B, S).
-
-        Rilassamento esatto della transizione dura: con ``state`` e ``action``
-        one-hot il risultato e' one-hot, e resta differenziabile rispetto a
-        entrambi. E' il ``step_pi`` di Axel, scritto con un einsum al posto della
-        catena di ``matmul`` e ``squeeze``, che sulle nostre dimensioni
-        (fino a 384 azioni x 193 stati) era il punto in cui la memoria esplodeva.
-        """
 
         return torch.einsum("ba,bs,ast->bt", action, state, self.transitions)
 
@@ -115,17 +65,8 @@ class TensorDFA:
         return F.one_hot(state_indices, num_classes=self.n_states).float()
 
 
+# LLL: weighted cross-entropy plus a penalty on the mass the automaton rejects
 class LocalLogicLoss(nn.Module):
-    """LLL: cross-entropy pesata piu' penalita' sulla massa che l'automa rifiuta.
-
-    Due differenze rispetto al nostro ``checker``, ed e' li' che sta l'idea di
-    Axel. La prima: la cross-entropy viene **spenta** sugli esempi il cui target
-    e' esso stesso vietato dall'automa. Sotto rumore quel target e' un'etichetta
-    corrotta, quindi la loss smette di insegnare al modello a riprodurre errori
-    riconoscibili come tali. La seconda: la penalita' e' ``-log(1 - massa)``
-    invece della massa, quindi cresce senza limite man mano che la probabilita'
-    vietata si avvicina a uno.
-    """
 
     def __init__(self, allowed_mask: torch.Tensor, alpha: float = 0.5) -> None:
         super().__init__()
@@ -141,8 +82,9 @@ class LocalLogicLoss(nn.Module):
         cross_entropy = F.cross_entropy(logits, targets, reduction="none")
         target_rejected = rejects.gather(1, targets.unsqueeze(1)).squeeze(1)
         weights = (~target_rejected).float()
-        # Se in un batch OGNI target e' vietato non resta supervisione: l'epsilon
-        # di Axel evita la divisione per zero e il termine si annulla da solo.
+        # If EVERY target in a batch is forbidden, no supervision is left: the
+        # epsilon of the original code avoids the division by zero and the term
+        # cancels on its own.
         weighted = (cross_entropy * weights).sum() / (weights.sum() + 1e-6)
 
         invalid_mass = (torch.softmax(logits, dim=1) * rejects).sum(dim=1)
@@ -151,19 +93,8 @@ class LocalLogicLoss(nn.Module):
         return self.alpha * weighted + (1.0 - self.alpha) * penalty
 
 
+# GLL: the model runs on by itself and the automaton judges the whole trace
 class GlobalLogicLoss(nn.Module):
-    """GLL: il modello prosegue da solo e l'automa giudica la traccia intera.
-
-    Dal prefisso il modello genera ``horizon`` attivita' campionandole con
-    Gumbel-Softmax, cosi' la scelta resta differenziabile; l'automa le consuma
-    nella sua forma rilassata e alla fine dice quanta probabilita' di
-    accettazione e' rimasta. La penalita' e' ``-log`` di quella quantita', media
-    su ``num_samples`` rollout indipendenti dallo stesso prefisso.
-
-    E' il contrario della locale: li' si guarda un passo e la distribuzione, qui
-    la traccia e il suo esito. E' anche il motivo per cui costa: un rollout e'
-    ``horizon`` passi sequenziali su un batch replicato ``num_samples`` volte.
-    """
 
     def __init__(self, dfa: TensorDFA, *, horizon: int, alpha: float = 0.5,
                  temperature: float = 0.5, num_samples: int = 4) -> None:
@@ -172,10 +103,11 @@ class GlobalLogicLoss(nn.Module):
             raise ValueError(f"alpha deve stare in [0, 1], ricevuto {alpha}")
         self.dfa = dfa
         self.horizon = horizon
-        #: Miscelato dal chiamante, non qui: nel runner di Axel la GLL torna la
-        #: sola penalita' logica e la combinazione ``alpha * CE + (1-alpha) * GLL``
-        #: avviene nel ciclo di training. Tenerlo qui e' solo un modo di far
-        #: viaggiare il valore insieme alla loss a cui appartiene.
+        #: Blended by the caller, not here: in the reference runner GLL returns
+        #: the logic penalty alone and the combination
+        #: ``alpha * CE + (1-alpha) * GLL`` happens in the training loop.
+        #: Keeping it here is only a way to carry the value with the loss it
+        #: belongs to.
         self.alpha = alpha
         self.temperature = temperature
         self.num_samples = num_samples
@@ -195,10 +127,10 @@ class GlobalLogicLoss(nn.Module):
 
         tokens = tokens.repeat_interleave(samples, dim=0)
         lengths = lengths.repeat_interleave(samples, dim=0)
-        # Lo stato dell'automa dopo il prefisso e' noto in forma dura: nel
-        # directly-follows lo stato E' l'ultima attivita'. Non serve rigiocare
-        # il prefisso in forma rilassata, e non conviene -- sarebbe gradiente
-        # speso su una parte del testo che il modello non ha generato.
+        # The automaton state after the prefix is known in hard form: in the
+        # directly-follows view the state IS the last activity. There is no need
+        # to replay the prefix in relaxed form, and no benefit either -- it would
+        # be gradient spent on a part of the trace the model did not generate.
         state = self.dfa.initial_state(state_ids.repeat_interleave(samples, dim=0))
 
         logits, hidden = model.encode(tokens, lengths)

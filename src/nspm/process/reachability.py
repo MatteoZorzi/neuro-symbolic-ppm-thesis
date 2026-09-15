@@ -1,44 +1,5 @@
-"""Petri-net reachability graph turned into a deterministic automaton.
-
-This is a Python port of ``temp/DpnReachabilityWoGuards.java`` (ProM's
-``DataPetriNets`` + ``LTL2Automaton`` plug-ins) on top of :mod:`pm4py` nets.
-The Java code traverses every reachable marking of the (data) Petri net and
-builds an automaton during that traversal; the same logic is reproduced here:
-
-1. start from the initial marking and explore every reachable marking by firing
-   enabled transitions (:func:`_explore`);
-2. one automaton state per marking, one automaton edge per fired transition,
-   labelled with the transition's activity label;
-3. markings that match a final marking become **accepting** states;
-4. a **trap** (fail) state is added, every activity that a state does not handle
-   leads to it, and the trap self-loops on everything -- the automaton is
-   *complete*, so a rejected trace is one that ends in the trap;
-5. activities outside the net's own alphabet **self-loop** on every state (the
-   Java ``addNegativePropositionsTransition`` call): a net says nothing about
-   activities it does not model, so those events must not reject a trace;
-6. the result is determinized, renumbered and minimized -- the Python
-   equivalent of ``op.determinize().op.complete().op.renumber().op.minimize()``.
-
-Two deliberate deviations from the Java source:
-
-* **Silent transitions.** The Java version carries a ``//TODO: Silent
-  transitions`` and simply skips invisible transitions. That is unusable for
-  pm4py nets: the inductive miner emits τ-transitions for every skip and loop,
-  and dropping them disconnects the reachability graph. Here τ-transitions are
-  handled by **τ-closure**: a state is the set of markings reachable by zero or
-  more silent firings, exactly as in the standard NFA-with-ε construction.
-* **Determinization is fused into the traversal.** Because τ-closure (and
-  duplicate activity labels, which the inductive miner also produces) makes the
-  marking graph nondeterministic, states are *sets* of markings built by subset
-  construction, instead of building an NFA first and determinizing it after.
-  The accepted language is the same.
-
-The automaton produced here is a genuine state machine over markings, so it is
-strictly more precise than the directly-follows :class:`~.automaton.ProcessDFA`
-learned from traces. To feed it to the existing checker loss, which is keyed on
-the *last activity* only, use :meth:`ReachabilityAutomaton.to_process_dfa` --
-see the note on that method about the precision that projection gives up.
-"""
+# The reachability graph of a Petri net, as a deterministic automaton.
+# A Python port of ProM's DpnReachabilityWoGuards.java on top of pm4py nets.
 
 from __future__ import annotations
 
@@ -60,12 +21,9 @@ MarkingKey = tuple[tuple[str, int], ...]
 CompiledTransition = tuple[str | None, Mapping[str, int], Mapping[str, int]]
 
 
+# Raised when the reachability graph exceeds ``max_states``
 class UnboundedNetError(RuntimeError):
-    """Raised when the reachability graph exceeds ``max_states``.
-
-    Sound workflow nets (what the inductive miner returns) are bounded, so this
-    normally means the net is unbounded or pathologically large.
-    """
+    pass
 
 
 # --------------------------------------------------------------------------- #
@@ -73,8 +31,8 @@ class UnboundedNetError(RuntimeError):
 # --------------------------------------------------------------------------- #
 
 
+# Canonicalise a ``pm4py`` marking (or plain mapping) into a key
 def _marking_key(marking) -> MarkingKey:
-    """Canonicalise a ``pm4py`` marking (or plain mapping) into a key."""
 
     items = []
     for place, count in marking.items():
@@ -84,13 +42,8 @@ def _marking_key(marking) -> MarkingKey:
     return tuple(sorted(items))
 
 
+# Freeze the net into ``(label, preset, postset)`` triples
 def _compile_transitions(net) -> tuple[CompiledTransition, ...]:
-    """Freeze the net into ``(label, preset, postset)`` triples.
-
-    Sorting is deterministic (visible before silent, then by label and name) so
-    that state numbering is reproducible across runs -- the same reason
-    :class:`~.petrinet.PetriNet` sorts its places and transitions.
-    """
 
     compiled: list[CompiledTransition] = []
     for transition in sorted(
@@ -111,10 +64,10 @@ def _is_enabled(marking: MarkingKey, preset: Mapping[str, int]) -> bool:
     return all(tokens.get(place, 0) >= weight for place, weight in preset.items())
 
 
+# Consume the preset and produce the postset (transition must be enabled)
 def _fire(
     marking: MarkingKey, preset: Mapping[str, int], postset: Mapping[str, int]
 ) -> MarkingKey:
-    """Consume the preset and produce the postset (transition must be enabled)."""
 
     tokens = dict(marking)
     for place, weight in preset.items():
@@ -124,12 +77,12 @@ def _fire(
     return tuple(sorted((place, n) for place, n in tokens.items() if n))
 
 
+# All markings reachable from ``markings`` by zero or more silent firings
 def _tau_closure(
     markings: Iterable[MarkingKey],
     silent: Sequence[CompiledTransition],
     max_states: int,
 ) -> frozenset[MarkingKey]:
-    """All markings reachable from ``markings`` by zero or more silent firings."""
 
     closure = set(markings)
     if not silent:
@@ -157,16 +110,9 @@ def _tau_closure(
 # --------------------------------------------------------------------------- #
 
 
+# A complete, minimal DFA accepting exactly the net's firing language
 @dataclass(frozen=True)
 class ReachabilityAutomaton:
-    """A complete, minimal DFA accepting exactly the net's firing language.
-
-    ``transitions[state][activity]`` is total over :attr:`activities`: an
-    activity a state cannot fire leads to :attr:`trap_state`, which absorbs
-    everything. A trace is accepted iff replaying it ends in an accepting state,
-    which -- because final markings are the accepting ones -- means the trace is
-    a complete, sound execution of the net, not merely a prefix of one.
-    """
 
     activities: tuple[str, ...]
     init_state: int
@@ -180,6 +126,7 @@ class ReachabilityAutomaton:
 
     # -- construction ------------------------------------------------------- #
 
+    # Build the automaton from a ``pm4py`` net by marking traversal
     @classmethod
     def from_petri_net(
         cls,
@@ -191,20 +138,6 @@ class ReachabilityAutomaton:
         minimize: bool = True,
         max_states: int = 100_000,
     ) -> "ReachabilityAutomaton":
-        """Build the automaton from a ``pm4py`` net by marking traversal.
-
-        Args:
-            net: a ``pm4py`` :class:`~pm4py.objects.petri_net.obj.PetriNet`.
-            initial_marking: the net's initial marking.
-            final_markings: one marking, or an iterable of markings, that count
-                as accepting (``getFinalMarkings()`` in the Java version).
-            alphabet: optional wider activity alphabet, e.g. the log vocabulary.
-                Activities in it that the net does not model self-loop on every
-                state instead of rejecting -- the Java behaviour for
-                propositions outside the net's alphabet.
-            minimize: run Moore partition refinement on the completed DFA.
-            max_states: safety bound; see :class:`UnboundedNetError`.
-        """
 
         compiled = _compile_transitions(net)
         visible = tuple(t for t in compiled if t[0] is not None)
@@ -254,11 +187,11 @@ class ReachabilityAutomaton:
             automaton = automaton.minimized()
         return automaton
 
+    # Build from this project's :class:`~.petrinet.PetriNet` wrapper
     @classmethod
     def from_process_net(
         cls, petri_net, **kwargs
     ) -> "ReachabilityAutomaton":
-        """Build from this project's :class:`~.petrinet.PetriNet` wrapper."""
 
         return cls.from_petri_net(
             petri_net.network,
@@ -285,9 +218,9 @@ class ReachabilityAutomaton:
     def state_count(self) -> int:
         return len(self.transitions)
 
+    # Number of edges that do not lead to the trap state
     @property
     def transition_count(self) -> int:
-        """Number of edges that do not lead to the trap state."""
 
         return sum(
             1
@@ -297,8 +230,8 @@ class ReachabilityAutomaton:
             if target != self.trap_state
         )
 
+    # Activities that do not send ``state`` to the trap
     def allowed_activities(self, state: int) -> frozenset[str]:
-        """Activities that do not send ``state`` to the trap."""
 
         row = self.transitions.get(state, {})
         return frozenset(
@@ -307,18 +240,13 @@ class ReachabilityAutomaton:
             if target != self.trap_state
         )
 
+    # Follow one edge; ``None`` for an activity outside the alphabet
     def step(self, state: int, activity: str) -> int | None:
-        """Follow one edge; ``None`` for an activity outside the alphabet."""
 
         return self.transitions.get(state, {}).get(activity)
 
+    # Replay a prefix from the initial state
     def state_after(self, prefix: Sequence[str]) -> int | None:
-        """Replay a prefix from the initial state.
-
-        Returns the reached state, or ``None`` if the prefix uses an activity
-        the automaton has no edge for at all. Reaching the trap is *not*
-        ``None``: it is a well-defined "this prefix is non-conformant" answer.
-        """
 
         state = self.init_state
         for activity in prefix:
@@ -328,27 +256,22 @@ class ReachabilityAutomaton:
             state = nxt
         return state
 
+    # True iff the trace is a complete execution reaching a final marking
     def accepts(self, trace: Sequence[str]) -> bool:
-        """True iff the trace is a complete execution reaching a final marking."""
 
         state = self.state_after(trace)
         return state is not None and state in self.accepting
 
+    # True iff the prefix can still be extended into an accepted trace
     def is_conformant_prefix(self, prefix: Sequence[str]) -> bool:
-        """True iff the prefix can still be extended into an accepted trace."""
 
         state = self.state_after(prefix)
         return state is not None and state != self.trap_state
 
     # -- transformations ---------------------------------------------------- #
 
+    # Moore partition refinement, then a BFS renumbering from the init state
     def minimized(self) -> "ReachabilityAutomaton":
-        """Moore partition refinement, then a BFS renumbering from the init state.
-
-        The DFA is complete by construction, so refining by
-        ``(block, blocks of successors)`` until the partition is stable yields
-        the unique minimal DFA for the language.
-        """
 
         states = self.states
         block_of = {state: int(state in self.accepting) for state in states}
@@ -368,8 +291,8 @@ class ReachabilityAutomaton:
 
         return self._renumber(block_of)
 
+    # Collapse states by block and renumber them breadth-first from init
     def _renumber(self, block_of: Mapping[int, int]) -> "ReachabilityAutomaton":
-        """Collapse states by block and renumber them breadth-first from init."""
 
         members: dict[int, list[int]] = {}
         for state, block in block_of.items():
@@ -418,22 +341,8 @@ class ReachabilityAutomaton:
             state_markings=markings,
         )
 
+    # Project onto the directly-follows form the checker loss consumes
     def to_process_dfa(self) -> ProcessDFA:
-        """Project onto the directly-follows form the checker loss consumes.
-
-        :func:`~..learning.logic.build_allowed_mask` keys the allowed-next mask
-        on the **last activity token** alone, so a marking-aware automaton has
-        to be flattened: the successors permitted after activity ``a`` become
-        the union of what is permitted in *every* automaton state reachable by
-        an ``a``-edge.
-
-        That union is a sound over-approximation -- it never forbids something
-        the net allows, so the checker penalty stays free of false positives --
-        but it does lose the net's memory: when ``a`` occurs in two different
-        contexts the projection permits the union of both continuations. Use
-        :meth:`step`/:meth:`is_conformant_prefix` directly if you need the
-        state-aware answer.
-        """
 
         # For every activity, collect the automaton states an ``a``-edge lands
         # in (the trap contributes nothing: it forbids everything).
@@ -523,12 +432,8 @@ class ReachabilityAutomaton:
             },
         )
 
+    # DOT string, mirroring ``createAutomatonVisualizationString``
     def to_dot(self) -> str:
-        """DOT string, mirroring ``createAutomatonVisualizationString``.
-
-        The trap state and every edge into it are omitted, and parallel edges
-        between the same pair of states are merged into one multi-line label.
-        """
 
         lines = ['digraph "" {', '  init [shape=none, label=""];', '  rankdir = "LR";']
         for state in self.states:
@@ -553,8 +458,8 @@ class ReachabilityAutomaton:
         lines.append("}")
         return "\n".join(lines)
 
+    # Create a NetworkX graph lazily, keeping it an optional dependency
     def to_networkx(self):
-        """Create a NetworkX graph lazily, keeping it an optional dependency."""
 
         import networkx as nx
 
@@ -576,19 +481,13 @@ class ReachabilityAutomaton:
 # --------------------------------------------------------------------------- #
 
 
+# Traverse every reachable marking, building the automaton on the way
 def _explore(
     init_key: MarkingKey,
     visible: Sequence[CompiledTransition],
     silent: Sequence[CompiledTransition],
     max_states: int,
 ) -> tuple[list[frozenset[MarkingKey]], list[dict[str, int]]]:
-    """Traverse every reachable marking, building the automaton on the way.
-
-    This is ``visitNextState`` from the Java source, rewritten as an explicit
-    worklist (no recursion depth limit) over τ-closed *sets* of markings. Each
-    set is one automaton state; each activity label enabled anywhere in the set
-    gives one outgoing edge to the τ-closure of the markings it produces.
-    """
 
     initial = _tau_closure([init_key], silent, max_states)
     state_of: dict[frozenset[MarkingKey], int] = {initial: 0}
