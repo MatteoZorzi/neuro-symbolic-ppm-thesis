@@ -13,10 +13,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from nspm.config import ExperimentConfig
 from nspm.data.loader import read_log
 from nspm.data.preparation import (
-    TraceSplits,
-    TraceUtils,
     PrefixLog,
-    ActivityVocabulary,
     build_splits,
     build_vocabulary,
     knowledge_traces,
