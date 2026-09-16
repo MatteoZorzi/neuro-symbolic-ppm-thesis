@@ -13,8 +13,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 from common import (AXIS, COLORS, DATASET_ORDER, FIGURES, GRID, GRID_CSV,  # noqa: E402
-                    INK, INK_MUTED, INK_SECONDARY, MARKERS, PROTOCOLS, ROOT,
-                    SHORT, SURFACE, VARIANTS, copy_to_thesis)
+                    INK, INK_MUTED, INK_SECONDARY, MARKERS, PROTOCOLS, SHORT,
+                    SURFACE, VARIANTS, copy_to_thesis, shown)
 
 #: Metric -> the label of the y axis. Only the four the chapter reports.
 AXIS_LABEL = {
@@ -217,19 +217,19 @@ def main() -> None:
                   for letter, protocol in PROTOCOLS.items()}
         path = args.out / f"{name}-paired.png"
         draw_paired(tables, args.metric, path)
-        print(f"wrote {path.relative_to(ROOT)}")
+        print(f"wrote {shown(path)}")
         if not args.no_thesis_copy:
-            print(f"  mirrored to {copy_to_thesis(path).relative_to(ROOT)}")
+            print(f"  mirrored to {shown(copy_to_thesis(path))}")
         return
 
     for letter, protocol in PROTOCOLS.items():
         table = curves(grid[grid["protocol"] == letter], args.metric)
         path = args.out / f"{name}-{protocol}.png"
         draw(table, args.metric, protocol, path)
-        print(f"wrote {path.relative_to(ROOT)}")
+        print(f"wrote {shown(path)}")
 
         if not args.no_thesis_copy:
-            print(f"  mirrored to {copy_to_thesis(path).relative_to(ROOT)}")
+            print(f"  mirrored to {shown(copy_to_thesis(path))}")
 
 
 if __name__ == "__main__":

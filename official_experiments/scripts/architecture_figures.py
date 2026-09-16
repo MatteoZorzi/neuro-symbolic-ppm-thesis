@@ -14,7 +14,7 @@ from matplotlib.colors import to_rgba  # noqa: E402
 from matplotlib.patches import FancyBboxPatch  # noqa: E402
 
 from common import (FIGURES, INK, INK_SECONDARY as MUTED, ROOT,  # noqa: E402
-                    copy_to_thesis, save_figure)
+                    copy_to_thesis, save_figure, shown)
 
 GRID = Path(__file__).resolve().parent / "matrix.py"
 CONFIG = ROOT / "src" / "nspm" / "config.py"
@@ -481,10 +481,10 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
     for name, draw in FIGURES_TO_DRAW:
         draw(path=out / name)
-        print(f"wrote {(out / name).relative_to(ROOT)}")
+        print(f"wrote {shown(out / name)}")
 
         if not args.no_thesis_copy:
-            print(f"  mirrored to {copy_to_thesis(out / name).relative_to(ROOT)}")
+            print(f"  mirrored to {shown(copy_to_thesis(out / name))}")
 
 
 if __name__ == "__main__":

@@ -95,6 +95,14 @@ def save_figure(fig: plt.Figure, path: str | Path | None) -> plt.Figure:
     return fig
 
 
+# The path as printed: relative to the repository when it is inside it
+def shown(path: Path) -> str:
+    try:
+        return str(Path(path).resolve().relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
 # Mirror a written figure into the thesis image directory
 def copy_to_thesis(path: Path) -> Path:
     THESIS_IMAGES.mkdir(parents=True, exist_ok=True)

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from common import GRID_CSV, PROTOCOL_DIR, ROOT
+from common import GRID_CSV, PROTOCOL_DIR, ROOT, shown
 
 #: The order the rows are concatenated in, which is the order ``all_grids.csv``
 #: has always had. It is **not** :data:`common.DATASET_ORDER`: that one puts
@@ -30,7 +30,7 @@ KEY = ["dataset", "variant", "noise", "seed"]
 def read_grid(root: Path, dataset: str, protocol: str) -> pd.DataFrame:
     path = root / PROTOCOL_DIR[protocol] / dataset / "results.csv"
     if not path.exists():
-        raise SystemExit(f"missing grid: {path.relative_to(ROOT)}")
+        raise SystemExit(f"missing grid: {shown(path)}")
     return pd.read_csv(path)
 
 
@@ -74,7 +74,7 @@ def main() -> None:
     everything = pd.concat(grids, ignore_index=True)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     everything.to_csv(args.out, index=False)
-    print(f"\nwrote {args.out.relative_to(ROOT)}: {len(everything)} rows, "
+    print(f"\nwrote {shown(args.out)}: {len(everything)} rows, "
           f"{everything.groupby(['dataset', 'protocol']).ngroups} grids")
 
 

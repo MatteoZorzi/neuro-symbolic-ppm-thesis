@@ -14,8 +14,8 @@ import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.lines import Line2D  # noqa: E402
 
 from common import (AXIS, COLORS, FIGURES, GRID, GRID_CSV, INK,  # noqa: E402
-                    INK_MUTED, INK_SECONDARY, ROOT, SURFACE, VARIANTS,
-                    copy_to_thesis)
+                    INK_MUTED, INK_SECONDARY, SURFACE, VARIANTS,
+                    copy_to_thesis, shown)
 
 #: Where the name of each model goes, in data units, and how it is anchored.
 #: Four of the eight points stand on x = 1 and no automatic placement keeps
@@ -146,10 +146,10 @@ def main() -> None:
 
     path = args.out / "training-cost.png"
     draw(grid, path)
-    print(f"\nwrote {path.relative_to(ROOT)}")
+    print(f"\nwrote {shown(path)}")
 
     if not args.no_thesis_copy:
-        print(f"  mirrored to {copy_to_thesis(path).relative_to(ROOT)}")
+        print(f"  mirrored to {shown(copy_to_thesis(path))}")
 
 
 if __name__ == "__main__":
