@@ -94,7 +94,7 @@ The full list is in `official_experiments/README.md`.
 Run a noise curve (one protocol, one log, nine noise levels):
 
 ```bash
-python official_experiments/scripts/noise_curve.py --protocol B --dataset Sepsis_Case
+python official_experiments/scripts/noise_curve.py --protocol test --dataset Sepsis_Case
 ```
 
 Training writes under `runs/`, which is git-ignored, and resumes: a cell already

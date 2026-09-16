@@ -26,60 +26,38 @@ COLUMNS = ["accuracy", "macro_f1", "top3", "dl_similarity", "exact_match",
 KEY = ["dataset", "arch", "variant", "noise", "seed"]
 
 
-# How the rows of a protocol are produced, and where they end up
+# Where the rows of a protocol end up, and how the protocol is described
 @dataclass(frozen=True)
 class Protocol:
 
-    #: protocol letter, passed to ``matrix.py --protocol``
+    #: protocol name, passed to ``matrix.py --protocol``
     name: str
-    #: subdirectory of ``runs/`` with the first task's CSV and the checkpoints
+    #: subdirectory of ``runs/`` with the CSV and the checkpoints
     out_dir: str
-    #: subdirectory of ``runs/`` with the suffix CSV; ``None`` when the first
-    #: script already measures both tasks
-    suffix_dir: str | None
-    #: the script that trains
-    trainer: str
-    #: the script that scores the suffix from the checkpoints; ``None`` if unused
-    suffix_scorer: str | None
     #: description, for titles and messages
     label: str
 
 
+#: The two protocols differ in one thing: the partition the knowledge is mined
+#: from. The published grids were launched under the letters B (test) and
+#: C (train), which survive in their ``protocol`` column.
 PROTOCOLS = {
-    "B": Protocol(
-        name="B",
-        out_dir="noise_curve_b",
-        suffix_dir=None,
-        trainer="matrix.py",
-        suffix_scorer=None,
+    "test": Protocol(
+        name="test",
+        out_dir="noise_curve_test",
         label="temporal split · event noise · knowledge from test",
     ),
-    "C": Protocol(
-        name="C",
-        out_dir="noise_curve_c",
-        suffix_dir=None,
-        trainer="matrix.py",
-        suffix_scorer=None,
+    "train": Protocol(
+        name="train",
+        out_dir="noise_curve_train",
         label="temporal split · event noise · knowledge from train",
-    ),
-    "A": Protocol(
-        name="A",
-        out_dir="noise_curve_a",
-        suffix_dir=None,
-        trainer="matrix.py",
-        suffix_scorer=None,
-        label="random split · label noise · knowledge from train",
     ),
 }
 
 
 # The CSV the figures read
 def results_path(protocol: Protocol, out_dir: str | None = None) -> Path:
-
-    folder = out_dir or protocol.out_dir
-    if protocol.suffix_dir is None:
-        return ROOT / "runs" / folder / "results.csv"
-    return ROOT / "runs" / folder / "merged.csv"
+    return ROOT / "runs" / (out_dir or protocol.out_dir) / "results.csv"
 
 
 def run(command: list[str]) -> int:
@@ -89,58 +67,17 @@ def run(command: list[str]) -> int:
 
 def launch(protocol: Protocol, dataset, noises, archs, variants, seeds,
            out_dir: str | None = None, extra: list[str] | None = None) -> int:
-    common = [
+    return run([
+        sys.executable, str(HERE / "matrix.py"),
         "--datasets", dataset,
         "--noises", *[str(n) for n in noises],
         "--archs", *archs,
         "--variants", *variants,
         "--seeds", *[str(s) for s in seeds],
-    ]
-    code = run([sys.executable, str(HERE / protocol.trainer),
-                *common, "--out-dir", out_dir or protocol.out_dir,
-                "--protocol", protocol.name, *(extra or [])])
-    if code != 0 or protocol.suffix_scorer is None:
-        return code
-
-    # Stage 2: the suffix, from the checkpoints just written. ``--reference-csv``
-    # has to move together with ``--ckpt-dir``, or the safety net would compare
-    # these models against the rows of a different grid.
-    stage_one = ROOT / "runs" / protocol.out_dir
-    code = run([sys.executable, str(HERE / protocol.suffix_scorer),
-                *common,
-                "--ckpt-dir", str(stage_one / "ckpt"),
-                "--reference-csv", str(stage_one / "results.csv"),
-                "--out-dir", protocol.suffix_dir])
-    if code != 0:
-        return code
-    merge_stages(protocol)
-    return 0
-
-
-# Join the first task and the suffix on the cell key
-def merge_stages(protocol: Protocol) -> None:
-
-    first = ROOT / "runs" / protocol.out_dir / "results.csv"
-    second = ROOT / "runs" / protocol.suffix_dir / "results.csv"
-    for path in (first, second):
-        if not path.exists():
-            raise SystemExit(f"manca {path}: il merge del protocollo A ha "
-                             f"bisogno di entrambi gli stadi")
-
-    left, right = pd.read_csv(first), pd.read_csv(second)
-    duplicated = [c for c in right.columns if c in set(left.columns) and c not in KEY]
-    merged = left.merge(right.drop(columns=duplicated), on=KEY, how="left",
-                        validate="one_to_one")
-
-    missing = int(merged["dl_similarity"].isna().sum()) if "dl_similarity" in merged else len(merged)
-    if missing:
-        print(f"ATTENZIONE: {missing}/{len(merged)} righe senza metriche del "
-              f"suffisso — lo stadio 2 non ha coperto tutte le celle")
-    out = results_path(protocol)
-    merged.to_csv(out, index=False)
-    print(f"merge: {len(left)} righe x {len(right)} suffissi -> "
-          f"{out.relative_to(ROOT)} ({len(merged)} righe, "
-          f"{len(merged.columns)} colonne)")
+        "--out-dir", out_dir or protocol.out_dir,
+        "--protocol", protocol.name,
+        *(extra or []),
+    ])
 
 
 def report(protocol: Protocol, out_dir: str | None = None) -> None:
@@ -174,10 +111,9 @@ def report(protocol: Protocol, out_dir: str | None = None) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Noise curves: nine levels from 0 to 80%, both protocols.",
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--protocol", choices=sorted(PROTOCOLS), default="B")
+    parser.add_argument("--protocol", choices=sorted(PROTOCOLS), default="test",
+                        help="partition the knowledge is mined from")
     parser.add_argument("--report", action="store_true", help="skip the launch, print the summary only")
-    parser.add_argument("--merge-only", action="store_true",
-                        help="protocol A: redo only the merge of the two stages")
     parser.add_argument("--dataset", default=DATASET)
     parser.add_argument("--noises", nargs="+", type=float, default=NOISES)
     parser.add_argument("--archs", nargs="+", default=["lstm"])
@@ -194,11 +130,7 @@ def main() -> int:
     args = parser.parse_args()
 
     protocol = PROTOCOLS[args.protocol]
-    if args.merge_only:
-        if protocol.suffix_dir is None:
-            raise SystemExit(f"il protocollo {args.protocol} non ha stadi da unire")
-        merge_stages(protocol)
-    elif not args.report:
+    if not args.report:
         code = launch(protocol, args.dataset, args.noises, args.archs,
                       args.variants, args.seeds, out_dir=args.out_dir,
                       extra=["--no-net-eval"] if args.no_net_eval else None)

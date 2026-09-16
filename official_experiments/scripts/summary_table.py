@@ -10,8 +10,8 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[2]
 GRID = ROOT / "official_experiments" / "all_grids.csv"
 
-#: The protocol letters the runs were launched with, and the names the thesis
-#: gives them. On disk they are still ``runs/noise_curve_b`` and ``_c``.
+#: The protocol letters the published grids were launched with, and the names
+#: the thesis gives them; ``noise_curve.py`` now takes the names.
 PROTOCOLS = {"B": "test", "C": "train"}
 
 #: CSV key -> the name of the model in the thesis, in the order of the chapter:

@@ -24,8 +24,8 @@ DATASETS = {
 }
 
 #: The thesis name of each protocol, and the partition its knowledge comes from.
-#: On disk the same two protocols were the folders ``noise_curve_b`` and
-#: ``noise_curve_c``, and ``matrix.py`` still calls them B and C.
+#: The published grids were launched under the letters B (test) and C (train),
+#: which survive in their ``protocol`` column.
 PROTOCOLS = {"test": "test", "train": "train"}
 
 #: The recorded fingerprints are read from the published grid rather than from
@@ -44,7 +44,7 @@ MASKS = {"dfa", "net", "net_state"}
 CACHE = ROOT / "runs" / "_artifacts"
 
 
-# The configuration ``matrix.py`` builds for protocol B and for protocol C
+# The configuration ``matrix.py`` builds for the test and the train protocol
 def protocol_config(knowledge_source: str):
     config = temporal_protocol()
     config = replace(config, data=replace(config.data,

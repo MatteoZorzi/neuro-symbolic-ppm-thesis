@@ -19,7 +19,7 @@ ModelKind = Literal["gru", "gru_marking", "gru_gnn", "gru_seq", "gru_grnn",
                     "lstm", "lstm_marking", "lstm_gnn", "lstm_seq", "lstm_grnn"]
 
 #: Encoder suffixes that need the Petri net adjacency matrices. Kept here so
-#: callers (``build_model``, ``scripts/final_matrix.py``) test membership
+#: that ``build_model`` and the scripts that build models test membership
 #: against one list instead of each repeating its own tuple of suffixes.
 GRAPH_SUFFIXES = ("_gnn", "_seq", "_grnn")
 

@@ -2,10 +2,10 @@
 # The job that produced the grids in this directory. Submit from the repository
 # root, not from here: srun calls the driver by a path relative to it.
 #
-#   sbatch official_experiments/run_slurm.sh B BPI_Challenge_2012
-#   sbatch official_experiments/run_slurm.sh C Sepsis_Case all
-#   sbatch official_experiments/run_slurm.sh C BPI_Challenge_2015_Municipality \
-#       baseline marking gnn seq --no-net-eval --out-dir noise_curve_c_bpic15
+#   sbatch official_experiments/run_slurm.sh test BPI_Challenge_2012
+#   sbatch official_experiments/run_slurm.sh train Sepsis_Case all
+#   sbatch official_experiments/run_slurm.sh train Sepsis_Case \
+#       baseline marking gnn seq --no-net-eval --out-dir noise_curve_train_features
 #
 # 16 cores for one GPU: training is light, pm4py token replay is the dominant
 # cost and runs on the CPU. gpu80g stays even where 80 GB is not needed, to bind
@@ -25,7 +25,7 @@
 
 set -euo pipefail
 
-PROTOCOL="${1:?first argument: A, B or C}"
+PROTOCOL="${1:?first argument: test or train}"
 DATASET="${2:?second argument: the directory name under datasets/}"
 shift 2
 

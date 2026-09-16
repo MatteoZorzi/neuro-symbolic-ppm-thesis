@@ -10,12 +10,11 @@ import torch
 from dataclasses import replace
 from pathlib import Path
 from statistics import mean, stdev
-from typing import get_args
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-from nspm.config import DataConfig, ExperimentConfig, temporal_protocol
+from nspm.config import temporal_protocol
 from nspm.data.loader import read_log
 from nspm.data.preparation import (
     PrefixLog,
@@ -31,17 +30,17 @@ from nspm.process.automaton import ProcessDFA
 from nspm.process.reachability import ReachabilityAutomaton
 from nspm.process.ltl_constraints import compliance_ratio, mine_precedence_constraints
 from nspm.learning.axel_losses import GlobalLogicLoss, LocalLogicLoss, TensorDFA
-from nspm.learning.models import GRAPH_SUFFIXES, ModelKind
+from nspm.learning.models import GRAPH_SUFFIXES
 from nspm.learning.training import train_model, resolve_device
 from nspm.learning.logic import build_allowed_mask, build_state_mask
 from nspm.learning.evaluation import evaluate_model
 from nspm.learning.trace_prediction import evaluate_suffix_prediction
 
 DATASETS = ("Sepsis_Case", "BPIC_2013_incidents", "BPIC_2020_DomesticDeclarations")
-#: Allowed but NOT in the default set: the frozen grid is 1260 rows over the
-#: three logs above, and a launch without arguments has to keep reproducing it.
-#: These two are asked for by name.
-EXTRA_DATASETS = ("BPI_Challenge_2012", "BPI_Challenge_2015_Municipality")
+#: Allowed but NOT in the default set: the earlier grids were run over the
+#: three logs above, and a launch without arguments keeps reproducing them.
+#: BPIC 2012 is asked for by name.
+EXTRA_DATASETS = ("BPI_Challenge_2012",)
 ALL_DATASETS = DATASETS + EXTRA_DATASETS
 ARCHS = ("gru", "lstm")
 VARIANTS = ("baseline", "checker", "marking", "gnn", "seq")
@@ -87,8 +86,8 @@ VARIANT_SPEC = {
 }
 
 #: Hyperparameters of the two losses of Mezini et al. They sweep ten values of
-#: alpha over fifteen runs; here the grid has a single seed, so the two values
-#: are chosen by hand and declared.
+#: alpha over fifteen runs; here the two values are fixed in advance, the same
+#: for every seed, and declared.
 #:
 #: In both losses ``alpha`` weighs the supervision and ``1 - alpha`` the logic,
 #: so the two methods run on opposite blends: the local one at 75% logic, the
@@ -262,7 +261,7 @@ def build_dataset_artifacts(dataset: str, config, families: set[str],
     # Under ``vocabulary_scope="train"`` the alphabet comes from the training
     # block alone, so held-out cases with activities never seen are neither
     # predictable nor scoreable and have to be dropped -- the convention of
-    # protocol A. Under ``"all"`` nothing is dropped and the set is empty by
+    # the earlier random-split runs. Under ``"all"`` nothing is dropped and the set is empty by
     # construction.
     if config.data.vocabulary_scope == "train":
         known = {a for trace in splits.train.values() for a in trace}
@@ -525,10 +524,10 @@ def loss_arguments(mask_key: str, art: dict) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description="One cell of a noise grid: next activity and suffix, same run.",
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--protocol", choices=("A", "B", "C"), default="B",
-                        help="B: split temporale, rumore sugli eventi, knowledge "
-                             "dal test. A: split random, rumore sui target, "
-                             "knowledge dal train. Cambia solo il config.")
+    parser.add_argument("--protocol", choices=("test", "train"), default="test",
+                        help="partition the knowledge is mined from. Temporal "
+                             "split and event noise in both: only the config "
+                             "changes.")
     parser.add_argument("--datasets", nargs="+", default=list(DATASETS),
                         choices=ALL_DATASETS)
     parser.add_argument("--archs", nargs="+", default=list(ARCHS), choices=ARCHS)
@@ -551,11 +550,7 @@ def main() -> None:
                              "with the variants that do not require it.")
     args = parser.parse_args()
 
-    # gate: seq stays out until the kinds exist in models.py
     variants = list(args.variants)
-    if "seq" in variants and "gru_seq" not in get_args(ModelKind):
-        print("NOTA: kind 'gru_seq' non ancora implementato -> variante 'seq' saltata.")
-        variants.remove("seq")
 
     out_dir = ROOT / "runs" / args.out_dir
     (out_dir / "ckpt").mkdir(parents=True, exist_ok=True)
@@ -587,34 +582,24 @@ def main() -> None:
         with results_csv.open("w", newline="") as handle:
             csv.writer(handle).writerow(CSV_FIELDS)
 
-    # The protocol is ONLY a choice of config: four fields of DataConfig. The
+    # The protocol is ONLY a choice of config: one field of DataConfig. The
     # rest of the pipeline does not know which of the two is running.
-    if args.protocol == "B":
-        base_config = temporal_protocol(
-            validation_fraction=args.val_fraction, test_fraction=args.test_fraction
-        )
-    elif args.protocol == "C":
-        # B with the knowledge taken from the training partition instead of the
-        # test one, and nothing else different: same temporal split, same
-        # vocabulary, same noise on the events. It isolates the source of the
-        # knowledge, which Mezini et al. declare to be the test set -- almost
-        # certainly a slip, and this protocol measures it instead of arguing
-        # about it.
+    base_config = temporal_protocol(
+        validation_fraction=args.val_fraction, test_fraction=args.test_fraction
+    )
+    if args.protocol == "train":
+        # The test protocol with the knowledge taken from the training
+        # partition instead of the test one, and nothing else different: same
+        # temporal split, same vocabulary, same noise on the events. It isolates
+        # the source of the knowledge, which Mezini et al. declare to be the
+        # test set -- almost certainly a slip, and this protocol measures it
+        # instead of arguing about it.
         # ``temporal_protocol`` accepts only batch_size and num_workers as
         # overrides: it drops the other fields silently, and rightly so, because
         # it is the function that DEFINES the protocol. So the change is made
         # afterwards, in the open, on a single field.
-        temporal = temporal_protocol(
-            validation_fraction=args.val_fraction, test_fraction=args.test_fraction
-        )
         base_config = replace(
-            temporal, data=replace(temporal.data, knowledge_source="train"))
-    else:
-        base_config = ExperimentConfig(data=DataConfig(
-            validation_fraction=args.val_fraction, test_fraction=args.test_fraction,
-            split_strategy="random", vocabulary_scope="train",
-            knowledge_source="train", noise_model="target",
-        ))
+            base_config, data=replace(base_config.data, knowledge_source="train"))
     base_config = replace(
         base_config,
         training=replace(base_config.training, logic_weight=LOGIC_WEIGHT,

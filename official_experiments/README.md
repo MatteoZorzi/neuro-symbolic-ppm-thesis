@@ -5,8 +5,8 @@ The results Chapter 5 reports, and the code that turns them into its tables and 
 ## The tree
 
 ```
-protocol-test/   knowledge mined from the TEST partition   (protocol B)
-protocol-train/  knowledge mined from the TRAIN partition  (protocol C)
+protocol-test/   knowledge mined from the TEST partition   (test protocol, letter B in the grids)
+protocol-train/  knowledge mined from the TRAIN partition  (train protocol, letter C in the grids)
   <log>/results.csv                                        one grid
 all_grids.csv                                              the eight grids in one file
 figures/                                                   the figures of the thesis
@@ -80,7 +80,7 @@ Everything here runs from a clone. `artifacts_table.py` re-mines each net and co
 One cell is one call to `matrix.py`; a grid is the nine noise levels, which `noise_curve.py` drives. Both write under `runs/`, and both resume: a cell already in the CSV is skipped, so a grid can be run in slices and survives interruption.
 
 ```
-python official_experiments/scripts/noise_curve.py --protocol B --dataset Sepsis_Case --variants baseline checker checker_net checker_net_state marking gnn seq lll gll
+python official_experiments/scripts/noise_curve.py --protocol test --dataset Sepsis_Case --variants baseline checker checker_net checker_net_state marking gnn seq lll gll
 ```
 
 ## Provenance
@@ -89,8 +89,8 @@ The grids were produced on the university HPC cluster by `run_slurm.sh`.
 One job per log, since the logs are independent, and the per-cell resume makes a job repeatable without losing work if SLURM preempts it. 
 It is submitted from the repository root.
 ```
-sbatch official_experiments/run_slurm.sh B BPI_Challenge_2012
-sbatch official_experiments/run_slurm.sh C Sepsis_Case all
+sbatch official_experiments/run_slurm.sh test BPI_Challenge_2012
+sbatch official_experiments/run_slurm.sh train Sepsis_Case all
 ```
 
 Without variants the job runs `lll gll` only, the two methods added last to the grids; `all` expands to the nine methods, and any explicit list is passed through as is.
