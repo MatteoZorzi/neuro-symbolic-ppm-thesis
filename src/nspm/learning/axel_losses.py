@@ -71,7 +71,7 @@ class LocalLogicLoss(nn.Module):
     def __init__(self, allowed_mask: torch.Tensor, alpha: float = 0.5) -> None:
         super().__init__()
         if not 0.0 <= alpha <= 1.0:
-            raise ValueError(f"alpha deve stare in [0, 1], ricevuto {alpha}")
+            raise ValueError(f"alpha must lie in [0, 1], got {alpha}")
         self.register_buffer("allowed_mask", allowed_mask)
         self.alpha = alpha
 
@@ -100,14 +100,12 @@ class GlobalLogicLoss(nn.Module):
                  temperature: float = 0.5, num_samples: int = 4) -> None:
         super().__init__()
         if not 0.0 <= alpha <= 1.0:
-            raise ValueError(f"alpha deve stare in [0, 1], ricevuto {alpha}")
+            raise ValueError(f"alpha must lie in [0, 1], got {alpha}")
         self.dfa = dfa
         self.horizon = horizon
-        #: Blended by the caller, not here: in the reference runner GLL returns
-        #: the logic penalty alone and the combination
-        #: ``alpha * CE + (1-alpha) * GLL`` happens in the training loop.
-        #: Keeping it here is only a way to carry the value with the loss it
-        #: belongs to.
+        #: Blended by the caller, not here: as in the reference runner, GLL
+        #: returns the logic penalty alone and ``alpha * CE + (1-alpha) * GLL``
+        #: happens in the training loop. The value only travels with its loss.
         self.alpha = alpha
         self.temperature = temperature
         self.num_samples = num_samples
@@ -128,9 +126,8 @@ class GlobalLogicLoss(nn.Module):
         tokens = tokens.repeat_interleave(samples, dim=0)
         lengths = lengths.repeat_interleave(samples, dim=0)
         # The automaton state after the prefix is known in hard form: in the
-        # directly-follows view the state IS the last activity. There is no need
-        # to replay the prefix in relaxed form, and no benefit either -- it would
-        # be gradient spent on a part of the trace the model did not generate.
+        # directly-follows view the state IS the last activity. Replaying the
+        # prefix in relaxed form would spend gradient on what the model did not generate.
         state = self.dfa.initial_state(state_ids.repeat_interleave(samples, dim=0))
 
         logits, hidden = model.encode(tokens, lengths)

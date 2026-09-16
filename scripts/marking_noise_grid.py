@@ -1,4 +1,4 @@
-# T10 — Label noise sulla branch marking (domanda del prof)
+# T10 -- label noise on the marking branch (the supervisor's question)
 
 import csv
 import random
@@ -106,11 +106,11 @@ for seed in SEEDS:
                      train_res.best_epoch, changed])
             print(f"[seed {seed} noise {noise:.2f}] {name:<12} "
                   f"acc {eval_res.accuracy:.4f} forbidden {eval_res.forbidden_mass:.4f} "
-                  f"({changed} label corrotte, best_epoch {train_res.best_epoch})",
+                  f"({changed} corrupted labels, best_epoch {train_res.best_epoch})",
                   flush=True)
 
-# --- riepilogo: per livello di noise, i due delta su accuracy e forbidden ----
-print("\n================ RIEPILOGO ================")
+# --- summary: per noise level, the two deltas on accuracy and forbidden mass ---
+print("\n================ SUMMARY ================")
 for metric_idx, metric in ((0, "accuracy"), (1, "forbidden")):
     print(f"\n--- {metric} ---")
     for noise in NOISES:
@@ -121,10 +121,10 @@ for metric_idx, metric in ((0, "accuracy"), (1, "forbidden")):
         line = " | ".join(
             f"{name} {mean(vals):.4f}±{stdev(vals):.4f}" for name, vals in per_model.items())
         print(f"noise {noise:.2f}: {line}")
-        for label, a, b in (("piatto - liscio", "gru_marking", "gru"),
-                            ("gnn - piatto", "gru_gnn", "gru_marking")):
+        for label, a, b in (("flat - plain", "gru_marking", "gru"),
+                            ("gnn - flat", "gru_gnn", "gru_marking")):
             deltas = [results[(seed, noise, a)][metric_idx]
                       - results[(seed, noise, b)][metric_idx] for seed in SEEDS]
             positives = sum(d > 0 for d in deltas)
-            print(f"    {label:15s} media {mean(deltas) * 100:+.2f} pt "
-                  f"| std {stdev(deltas) * 100:.2f} | positivi {positives}/{len(SEEDS)}")
+            print(f"    {label:15s} mean {mean(deltas) * 100:+.2f} pt "
+                  f"| std {stdev(deltas) * 100:.2f} | positive {positives}/{len(SEEDS)}")

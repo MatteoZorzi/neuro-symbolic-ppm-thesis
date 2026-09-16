@@ -83,12 +83,12 @@ def launch(protocol: Protocol, dataset, noises, archs, variants, seeds,
 def report(protocol: Protocol, out_dir: str | None = None) -> None:
     path = results_path(protocol, out_dir)
     if not path.exists():
-        raise SystemExit(f"manca {path} — lancia prima senza --report")
+        raise SystemExit(f"{path} is missing: launch first, without --report")
     curve = pd.read_csv(path).sort_values(["dataset", "variant", "arch", "noise"])
     present = [c for c in COLUMNS if c in curve.columns]
 
-    print(f"\n{'='*100}\ncurva del rumore — protocollo {protocol.label} — "
-          f"{path.relative_to(ROOT)} ({len(curve)} run)\n{'='*100}\n")
+    print(f"\n{'='*100}\nnoise curve — {protocol.label} protocol — "
+          f"{path.relative_to(ROOT)} ({len(curve)} runs)\n{'='*100}\n")
     print(curve[KEY + present].to_string(index=False))
 
     # Every level against the clean level of the same cell: the cumulative
@@ -102,7 +102,7 @@ def report(protocol: Protocol, out_dir: str | None = None) -> None:
     joined["acc_%"] = 100 * (joined.accuracy - joined.accuracy_clean) / joined.accuracy_clean
     joined["dl_%"] = 100 * (joined.dl_similarity - joined.dl_similarity_clean) / joined.dl_similarity_clean
 
-    print("\n--- calo cumulato rispetto a rumore 0, in % ---")
+    print("\n--- cumulative drop against noise 0, in % ---")
     print(joined.reset_index()
                 .pivot_table(index="noise", values=["acc_%", "dl_%"], aggfunc="mean")
                 .round(2).to_string())
@@ -135,7 +135,7 @@ def main() -> int:
                       args.variants, args.seeds, out_dir=args.out_dir,
                       extra=["--no-net-eval"] if args.no_net_eval else None)
         if code != 0:
-            print(f"lo stadio e' uscito con codice {code}")
+            print(f"the trainer exited with code {code}")
             return code
     report(protocol, args.out_dir)
     return 0

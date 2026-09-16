@@ -1,4 +1,4 @@
-# Kill test — scala di ablazione a quattro gradini sul marking della Petri net
+# Kill test -- four-rung ablation ladder on the Petri net marking
 
 import sys
 from dataclasses import replace
@@ -25,7 +25,7 @@ events = read_log(log_path)
 traces = TraceUtils.extract_traces(events)
 splits = TraceSplits.from_traces(traces)
 
-# artefatti simbolici solo dal train;val/test simulano dati futuri → niente leakage
+# symbolic artifacts from the training set only; val/test stand for future data -> no leakage
 vocab = ActivityVocabulary.from_traces(splits.train.values())
 petrinet = PetriNet.from_traces(splits.train)
 automaton = ProcessDFA.from_traces(splits.train.values())
@@ -65,8 +65,8 @@ MODELS = ("gru", "gru_marking", "gru_gnn", "gru_seq")
 SEEDS = (0, 1, 2, 3, 42)
 device = resolve_device(config.training.device)
 
-deltas_flat = []   # gradino 2 - gradino 1 (gia' noto: rumore)
-deltas_gnn = []    # gradino 3 - gradino 2 (la domanda dello Step 2)
+deltas_flat = []   # rung 2 - rung 1 (already known: noise)
+deltas_gnn = []    # rung 3 - rung 2 (the question of Step 2)
 deltas_seq = []    # rung 4 - rung 3 (the question of Step 3: time)
 for seed in SEEDS:
     seed_config = replace(config, seed=seed)
@@ -101,14 +101,14 @@ for seed in SEEDS:
     deltas_flat.append(delta_flat)
     deltas_gnn.append(delta_gnn)
     deltas_seq.append(delta_seq)
-    print(f"[seed {seed}] delta (piatto - liscio): {delta_flat*100:+.2f} pt "
-          f"| delta (gnn - piatto): {delta_gnn*100:+.2f} pt "
+    print(f"[seed {seed}] delta (flat - plain): {delta_flat*100:+.2f} pt "
+          f"| delta (gnn - flat): {delta_gnn*100:+.2f} pt "
           f"| delta (seq - gnn): {delta_seq*100:+.2f} pt")
 
-print(f"\nsu {len(SEEDS)} seed:")
-for label, deltas in (("piatto - liscio", deltas_flat), ("gnn - piatto", deltas_gnn),
+print(f"\nover {len(SEEDS)} seeds:")
+for label, deltas in (("flat - plain", deltas_flat), ("gnn - flat", deltas_gnn),
                       ("seq - gnn", deltas_seq)):
     positives = sum(d > 0 for d in deltas)
     print(f"  {label:15s} {[f'{d*100:+.2f}' for d in deltas]} pt "
-          f"| media {mean(deltas)*100:+.2f} | std {stdev(deltas)*100:.2f} "
-          f"| positivi {positives}/{len(SEEDS)}")
+          f"| mean {mean(deltas)*100:+.2f} | std {stdev(deltas)*100:.2f} "
+          f"| positive {positives}/{len(SEEDS)}")

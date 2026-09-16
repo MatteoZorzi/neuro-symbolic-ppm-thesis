@@ -32,11 +32,9 @@ from nspm.process.petrinet import PetriNet
 
 DATASETS = ("Sepsis_Case", "BPIC_2013_incidents", "BPIC_2020_DomesticDeclarations")
 
-#: (model_kind, variant, data family) pairs to re-run from a checkpoint. One
-#: without a symbolic channel and one with the marking sequence, which is the
-#: most fragile path: in free generation the markings have to be replayed from
-#: the model's own predictions, and a misalignment would not raise an error,
-#: only wrong numbers.
+#: (model_kind, variant, data family) pairs to re-run from a checkpoint: one
+#: without a symbolic channel and one with the marking sequence, the most
+#: fragile path, where a misalignment gives wrong numbers instead of an error.
 CHECKPOINT_PROBES = (("gru", "checker", "plain"), ("gru_seq", "seq", "sequences"))
 
 
@@ -47,7 +45,7 @@ def find_log(dataset: str) -> Path:
             return next(folder.glob(pattern))
         except StopIteration:
             continue
-    raise FileNotFoundError(f"nessun log in {folder}")
+    raise FileNotFoundError(f"no log in {folder}")
 
 
 # Rebuild from scratch everything the grid used for that dataset
@@ -90,7 +88,7 @@ def oracle_check(dataset: str, art: dict) -> dict:
                 "true": trace[k:], "predicted": trace[k:],
             })
             prefix_only += _violates_precedence(constraints, trace[:k])
-    result = _score_records(records, "oracolo", art["automaton"], constraints, 0)
+    result = _score_records(records, "oracle", art["automaton"], constraints, 0)
     return {
         "n": result.n_examples,
         "dl_similarity": result.dl_similarity,
@@ -109,7 +107,7 @@ def checkpoint_check(dataset: str, art: dict, config, device, rows) -> list[dict
     for kind, variant, family in CHECKPOINT_PROBES:
         path = checkpoints / f"{dataset}_{kind}_{variant}_n50_s3.pt"
         if not path.exists():
-            print(f"  [{variant}] checkpoint assente, salto: {path.name}")
+            print(f"  [{variant}] checkpoint missing, skipped: {path.name}")
             continue
         state = torch.load(path, map_location=device)
         model = build_model(
@@ -151,8 +149,8 @@ def checkpoint_check(dataset: str, art: dict, config, device, rows) -> list[dict
             ("dl_similarity", suffix.dl_similarity, float(row["dl_similarity"])),
         ):
             outcomes.append({
-                "variante": variant, "metrica": name,
-                "ricalcolata": recomputed, "csv": stored,
+                "variant": variant, "metric": name,
+                "recomputed": recomputed, "csv": stored,
                 "ok": abs(recomputed - stored) < 1e-6,
             })
     return outcomes
@@ -179,7 +177,7 @@ def main() -> None:
 
     failures = 0
     print("=" * 78)
-    print("1. TEST DELL'ORACOLO — predizione sostituita dal suffisso vero")
+    print("1. ORACLE TEST -- the prediction replaced by the true suffix")
     print("=" * 78)
     for dataset in args.datasets:
         art = rebuild(dataset, config)
@@ -190,30 +188,30 @@ def main() -> None:
             and check["dfa_violation"] == 0.0
         )
         failures += 0 if perfect else 1
-        print(f"\n[{dataset}] {check['n']} suffissi")
-        print(f"  DL similarity        {check['dl_similarity']:.6f}   (atteso 1.0)")
-        print(f"  exact match          {check['exact_match']:.6f}   (atteso 1.0)")
-        print(f"  violazioni DFA       {check['dfa_violation']:.6f}   (atteso 0.0)")
-        print(f"  violazioni precedenza {check['precedence_violation']:.6f}   "
-              f"<-- PAVIMENTO: il modello non puo' scendere sotto")
-        print(f"  di cui gia' nel solo prefisso vero: {check['prefix_only_violations']:.6f}")
-        print(f"  esito: {'OK' if perfect else 'ATTENZIONE'}")
+        print(f"\n[{dataset}] {check['n']} suffixes")
+        print(f"  DL similarity          {check['dl_similarity']:.6f}   (expected 1.0)")
+        print(f"  exact match            {check['exact_match']:.6f}   (expected 1.0)")
+        print(f"  DFA violations         {check['dfa_violation']:.6f}   (expected 0.0)")
+        print(f"  precedence violations  {check['precedence_violation']:.6f}   "
+              f"<-- FLOOR: the model cannot go below")
+        print(f"  of which already in the true prefix alone: {check['prefix_only_violations']:.6f}")
+        print(f"  outcome: {'OK' if perfect else 'WARNING'}")
 
     if not args.skip_checkpoints and rows:
         print("\n" + "=" * 78)
-        print("2. RIPRODUZIONE DA CHECKPOINT — noise 0.50, seed 3")
+        print("2. REPRODUCTION FROM CHECKPOINT -- noise 0.50, seed 3")
         print("=" * 78)
         for dataset in args.datasets:
             art = rebuild(dataset, config)
             print(f"\n[{dataset}]")
             for outcome in checkpoint_check(dataset, art, config, device, rows):
                 failures += 0 if outcome["ok"] else 1
-                print(f"  {outcome['variante']:8s} {outcome['metrica']:14s} "
-                      f"ricalcolata {outcome['ricalcolata']:.6f} | CSV {outcome['csv']:.6f} "
-                      f"| {'OK' if outcome['ok'] else 'DIVERSO'}")
+                print(f"  {outcome['variant']:8s} {outcome['metric']:14s} "
+                      f"recomputed {outcome['recomputed']:.6f} | CSV {outcome['csv']:.6f} "
+                      f"| {'OK' if outcome['ok'] else 'DIFFERENT'}")
 
     print("\n" + "=" * 78)
-    print("nessuna anomalia" if failures == 0 else f"{failures} controlli da guardare")
+    print("no anomalies" if failures == 0 else f"{failures} checks to look at")
     raise SystemExit(1 if failures else 0)
 
 

@@ -60,9 +60,9 @@ def load(path: Path) -> dict:
     try:
         with path.open("rb") as handle:
             payload = pickle.load(handle)
-    except Exception as error:  # noqa: BLE001 - vedi docstring
-        print(f"cache degli artefatti illeggibile ({path.name}): {error} "
-              f"-- si rimina", flush=True)
+    except Exception as error:  # noqa: BLE001 - an unreadable cache is re-mined
+        print(f"unreadable artifact cache ({path.name}): {error} "
+              f"-- mining again", flush=True)
         return {}
     if payload.get("format_version") != FORMAT_VERSION:
         return {}
@@ -80,6 +80,6 @@ def save(path: Path, payload: dict) -> None:
             pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
         os.replace(temporary, path)
     except Exception as error:  # noqa: BLE001
-        print(f"cache degli artefatti non salvata ({path.name}): {error}",
+        print(f"artifact cache not saved ({path.name}): {error}",
               flush=True)
         temporary.unlink(missing_ok=True)

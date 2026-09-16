@@ -1,4 +1,4 @@
-# Check rapido: init di HeteroGraphEncoder (buffer, shape, parametri)
+# Quick check: init of HeteroGraphEncoder (buffers, shapes, parameters)
 
 import sys
 from pathlib import Path
@@ -19,34 +19,34 @@ net = PetriNet.from_traces(splits.train)
 a_pt, a_tp = net.adjacency_matrices
 
 enc = HeteroGraphEncoder(a_pt, a_tp, hidden_dim=16)
-print("a_pt_t shape:", tuple(enc.a_pt_t.shape), "(atteso: (34, 26), trasposta di 26x34)")
-print("a_tp_t shape:", tuple(enc.a_tp_t.shape), "(atteso: (26, 34))")
-print("buffer nello state_dict:", [k for k in enc.state_dict() if k.startswith("a_")])
-print("parametri trainabili:", sorted({n.split(".")[0] for n, _ in enc.named_parameters()}))
+print("a_pt_t shape:", tuple(enc.a_pt_t.shape), "(expected: (34, 26), the transpose of 26x34)")
+print("a_tp_t shape:", tuple(enc.a_tp_t.shape), "(expected: (26, 34))")
+print("buffers in the state_dict:", [k for k in enc.state_dict() if k.startswith("a_")])
+print("trainable parameters:", sorted({n.split(".")[0] for n, _ in enc.named_parameters()}))
 print("INIT OK")
 
 # --- forward smoke test -----------------------------------------------------
 import torch
 
-batch = torch.randint(0, 3, (5, len(net.places)))  # 5 marking finti, valori 0-2
+batch = torch.randint(0, 3, (5, len(net.places)))  # 5 fake markings, values 0-2
 out = enc(batch)
-assert out.shape == (5, 16), f"atteso (5, 16), ottenuto {tuple(out.shape)}"
+assert out.shape == (5, 16), f"expected (5, 16), got {tuple(out.shape)}"
 print("forward:", tuple(batch.shape), "->", tuple(out.shape))
 
 # The gradient must reach the Linear layers, not the buffers (the graph is a fact).
 out.sum().backward()
 for name, param in enc.named_parameters():
-    assert param.grad is not None, f"nessun gradiente su {name}"
+    assert param.grad is not None, f"no gradient on {name}"
 assert enc.a_pt_t.grad is None and enc.a_tp_t.grad is None
-print("gradienti: tutti i Linear OK, buffer senza gradiente")
+print("gradients: every Linear OK, buffers without gradient")
 
-# Proprieta' del max readout: marking tutto zero != marking attivo.
+# Property of the max readout: an all-zero marking differs from an active one.
 zero = enc(torch.zeros(1, len(net.places), dtype=torch.long))
 active = enc(batch[:1])
-print("readout distinti (zero vs attivo):", not torch.allclose(zero, active))
+print("distinct readouts (zero vs active):", not torch.allclose(zero, active))
 print("FORWARD OK")
 
-# --- wiring: build_model sui tre gradini + roundtrip checkpoint --------------
+# --- wiring: build_model on the three rungs + checkpoint round-trip ----------
 import tempfile
 
 from nspm.config import ExperimentConfig
@@ -81,7 +81,7 @@ model = build_model("gru_gnn", len(vocab.tokens), len(vocab.activities), vocab.p
 model.eval()
 save_checkpoint(ckpt, model, "gru_gnn", vocab, config, logic_enabled=False, best_epoch=1, stopped_early=False)
 loaded, _, payload = load_checkpoint(ckpt)
-assert payload["adjacency"] == adjacency, "le adiacenze nel payload non coincidono"
+assert payload["adjacency"] == adjacency, "the adjacencies in the payload do not match"
 assert torch.allclose(model(tokens, lengths, markings), loaded(tokens, lengths, markings), atol=1e-6)
-print("checkpoint roundtrip: adiacenze nel payload e predizioni identiche")
+print("checkpoint round-trip: adjacencies in the payload and identical predictions")
 print("WIRING OK")

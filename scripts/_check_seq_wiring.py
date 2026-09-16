@@ -1,4 +1,4 @@
-# Oracolo end-to-end del gradino 4 (kind *_seq) su dati veri
+# End-to-end oracle of rung 4 (kind *_seq) on real data
 
 import sys
 from pathlib import Path
@@ -33,9 +33,9 @@ sequence_log = base.with_markings(petrinet).with_marking_sequences(petrinet)
 static_log = base.with_markings(petrinet)
 
 places = len(petrinet.places)
-print(f"Sepsis: {len(vocabulary.activities)} attivita', {places} posti, {len(base)} prefissi")
+print(f"Sepsis: {len(vocabulary.activities)} activities, {places} places, {len(base)} prefixes")
 
-# ------------------------------------------------------------------ costruzione
+# ------------------------------------------------------------------ construction
 model = build_model(
     "gru_seq",
     len(vocabulary.tokens),
@@ -58,8 +58,8 @@ print("expects_sequences: marking=False, gnn=False, seq=True")
 # ---------------------------------------------------------------- forward/backward
 batch = next(iter(sequence_log.data_loader(32, shuffle=False)))
 chosen = symbolic_input(model, batch)
-assert chosen is batch.marking_sequences, "symbolic_input ha scelto lo stream sbagliato"
-print(f"symbolic_input -> sequenze {tuple(chosen.shape)} (non lo snapshot {tuple(batch.markings.shape)})")
+assert chosen is batch.marking_sequences, "symbolic_input picked the wrong stream"
+print(f"symbolic_input -> sequences {tuple(chosen.shape)} (not the snapshot {tuple(batch.markings.shape)})")
 
 logits = model(batch.tokens, batch.lengths, chosen)
 assert logits.shape == (batch.targets.size(0), len(vocabulary.activities))
@@ -69,24 +69,24 @@ loss.backward()
 encoder = model.marking_encoder
 gradients = {name: parameter.grad for name, parameter in encoder.named_parameters()}
 assert all(gradient is not None and gradient.abs().sum() > 0 for gradient in gradients.values()), \
-    "un pezzo dell'encoder non riceve gradiente"
-assert encoder.a_pt_t.grad is None and encoder.a_tp_t.grad is None, "le adiacenze non sono parametri"
-print(f"forward {tuple(logits.shape)}, loss {loss.item():.4f}, gradiente su "
-      f"{len(gradients)} tensori (grafo + GRU interna), adiacenze senza gradiente")
+    "a piece of the encoder receives no gradient"
+assert encoder.a_pt_t.grad is None and encoder.a_tp_t.grad is None, "the adjacencies are not parameters"
+print(f"forward {tuple(logits.shape)}, loss {loss.item():.4f}, gradient on "
+      f"{len(gradients)} tensors (graph + inner GRU), adjacencies without gradient")
 
-# ------------------------------------------------------------------- guardie
+# ------------------------------------------------------------------- guards
 static_batch = next(iter(static_log.data_loader(8, shuffle=False)))
 try:
     symbolic_input(model, static_batch)
-    raise AssertionError("nessun errore su un log senza sequenze")
+    raise AssertionError("no error on a log without sequences")
 except ValueError as error:
-    print(f"guardia famiglia dati OK: {str(error).splitlines()[0][:60]}...")
+    print(f"data-family guard OK: {str(error).splitlines()[0][:60]}...")
 
 try:
     encoder(batch.marking_sequences, None)
-    raise AssertionError("nessun errore senza lengths")
+    raise AssertionError("no error without lengths")
 except ValueError:
-    print("guardia lengths OK")
+    print("lengths guard OK")
 
 # --------------------------------------------------------------- checkpoint
 path = ROOT / "runs" / "_check" / "seq_wiring.pt"
@@ -99,8 +99,8 @@ model.eval()
 with torch.no_grad():
     before = model(batch.tokens, batch.lengths, chosen)
     after = restored(batch.tokens, batch.lengths, symbolic_input(restored, batch))
-assert torch.allclose(before, after, atol=1e-6), "il modello ricaricato predice diversamente"
-print(f"checkpoint roundtrip OK (adiacenze salvate, marking_dim={payload['marking_dim']}, "
-      "predizioni identiche)")
+assert torch.allclose(before, after, atol=1e-6), "the reloaded model predicts differently"
+print(f"checkpoint round-trip OK (adjacencies saved, marking_dim={payload['marking_dim']}, "
+      "identical predictions)")
 
-print("\nWIRING SEQ OK")
+print("\nSEQ WIRING OK")
