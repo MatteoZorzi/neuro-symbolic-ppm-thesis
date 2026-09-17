@@ -34,6 +34,7 @@ METRICS = {
     "suffix_dfa_violation_net": ("Suffix violation rate", True),
     "accuracy": ("Next-activity accuracy", False),
     "dl_similarity": ("Suffix similarity", False),
+    "secs_train": ("Training time of a run", True),
 }
 
 #: A run is one log at one noise level under one seed.
