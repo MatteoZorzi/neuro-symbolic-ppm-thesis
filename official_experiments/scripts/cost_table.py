@@ -56,14 +56,21 @@ def main() -> None:
 
     table = seconds(grid)
     table.columns = [DATASETS[d] for d in table.columns]
+    run_epochs = epochs(grid)
+    # Total time of a run: the seconds of one epoch on that log times the
+    # epochs the model goes through, so it can be read off the same table.
+    totals = table.mul(run_epochs, axis=0)
+    totals.columns = [f"{name} total" for name in totals.columns]
+    table = pd.concat([table, totals], axis=1)
     table["per epoch"] = ratio(grid, "secs_per_epoch")
     table["whole run"] = ratio(grid, "secs_train")
-    table["epochs"] = epochs(grid)
+    table["epochs"] = run_epochs
     table.index = [VARIANTS[v] for v in table.index]
 
-    pd.set_option("display.width", 200)
-    print("seconds of one epoch, the two ratios against the baseline, and the "
-          "number of epochs a run goes through:")
+    pd.set_option("display.width", 250)
+    print("seconds of one epoch, seconds of a run (epoch x epochs), the two "
+          "ratios against the baseline, and the number of epochs a run goes "
+          "through:")
     print(table.round(2).to_string())
 
 

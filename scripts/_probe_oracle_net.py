@@ -24,141 +24,144 @@ SEEDS = (0, 1, 2, 3, 42)
 VARIANTS = ("marking", "gnn", "seq")   # kind = "gru_" + variant
 FAMILY = {"marking": "marked", "gnn": "marked", "seq": "sequences"}
 
-out_dir = ROOT / "runs" / "_probe_oracle_net"
-(out_dir / "ckpt").mkdir(parents=True, exist_ok=True)
-results_csv = out_dir / "results.csv"
 
-config = ExperimentConfig()
-device = resolve_device(config.training.device)
+def main() -> None:
+    out_dir = ROOT / "runs" / "_probe_oracle_net"
+    (out_dir / "ckpt").mkdir(parents=True, exist_ok=True)
+    results_csv = out_dir / "results.csv"
 
-log_path = next((ROOT / "datasets" / "Sepsis_Case").glob("*.xes"))
-traces = TraceUtils.extract_traces(read_log(log_path))
-splits = TraceSplits.from_traces(traces)
-vocab = ActivityVocabulary.from_traces(splits.train.values())
-mask = build_allowed_mask(ProcessDFA.from_traces(splits.train.values()), vocab)
+    config = ExperimentConfig()
+    device = resolve_device(config.training.device)
 
-# ----------------------------------------------------------------- the two nets
-# honest: training only (the protocol). oracle: train + validation + test.
-everything = {**splits.train, **splits.validation, **splits.test}
-nets = {
-    "train": PetriNet.from_traces(splits.train),
-    "oracle": PetriNet.from_traces(everything),
-}
+    log_path = next((ROOT / "datasets" / "Sepsis_Case").glob("*.xes"))
+    traces = TraceUtils.extract_traces(read_log(log_path))
+    splits = TraceSplits.from_traces(traces)
+    vocab = ActivityVocabulary.from_traces(splits.train.values())
+    mask = build_allowed_mask(ProcessDFA.from_traces(splits.train.values()), vocab)
 
-print("=" * 70)
-print("DIAGNOSTICS OF THE TWO NETS (test set)")
-print("=" * 70)
+    # ----------------------------------------------------------------- the two nets
+    # honest: training only (the protocol). oracle: train + validation + test.
+    everything = {**splits.train, **splits.validation, **splits.test}
+    nets = {
+        "train": PetriNet.from_traces(splits.train),
+        "oracle": PetriNet.from_traces(everything),
+    }
 
+    print("=" * 70)
+    print("DIAGNOSTICS OF THE TWO NETS (test set)")
+    print("=" * 70)
 
-# Share of test traces the replay considers fitting the net
-def fit_fraction(net: PetriNet, partition) -> float:
-    event_log = net._create_event_log(partition.values())
-    results = token_replay.apply(event_log, net.network, net.init_marking,
-                                 net.final_marking, parameters=REPLAY_PARAMETERS)
-    return sum(bool(r["trace_is_fit"]) for r in results) / len(results)
+    # Share of test traces the replay considers fitting the net
+    def fit_fraction(net: PetriNet, partition) -> float:
+        event_log = net._create_event_log(partition.values())
+        results = token_replay.apply(event_log, net.network, net.init_marking,
+                                     net.final_marking, parameters=REPLAY_PARAMETERS)
+        return sum(bool(r["trace_is_fit"]) for r in results) / len(results)
 
-
-sample = list(splits.test.items())[:30]  # per-prefix replay is expensive
-for name, net in nets.items():
-    distinct, events = [], []
-    for _, trace in sample:
-        sequence = net.marking_sequence(trace)
-        distinct.append(len(set(sequence)))
-        events.append(len(trace))
-    print(f"[{name:6s}] {len(net.places):3d} places, {len(net.transitions):3d} transitions "
-          f"({sum(t.label is None for t in net.transitions)} silent) | "
-          f"fitting test traces {fit_fraction(net, splits.test):.1%} | "
-          f"distinct markings per trace {mean(distinct):.1f} over {mean(events):.1f} events")
-
-# --------------------------------------------------------------------- the data
-def loaders_for(net: PetriNet) -> dict:
-    def build(traces_map, shuffle):
-        base = PrefixLog.from_traces(traces_map, vocab)
-        marked = base.with_markings(net)
-        return {
-            "plain": base.data_loader(config.data.batch_size, shuffle=shuffle),
-            "marked": marked.data_loader(config.data.batch_size, shuffle=shuffle),
-            "sequences": marked.with_marking_sequences(net).data_loader(
-                config.data.batch_size, shuffle=shuffle),
-        }
-    return {"train": build(splits.train, True),
-            "val": build(splits.validation, False),
-            "test": build(splits.test, False)}
-
-
-print("\nbuilding the marked prefixes for both nets...", flush=True)
-data = {name: loaders_for(net) for name, net in nets.items()}
-
-# ------------------------------------------------------------------- training
-# resume: cells already in the CSV are skipped (the run is long and closing
-# the console kills the process).
-done: set[tuple[str, str, int]] = set()
-if results_csv.exists():
-    with results_csv.open() as handle:
-        for row in csv.DictReader(handle):
-            done.add((row["net"], row["variant"], int(row["seed"])))
-    print(f"resume: {len(done)} runs already in the CSV")
-else:
-    with results_csv.open("w", newline="") as handle:
-        csv.writer(handle).writerow(("net", "variant", "seed", "accuracy", "top3", "forbidden"))
-
-for seed in SEEDS:
-    seed_config = replace(config, seed=seed)
-
+    sample = list(splits.test.items())[:30]  # per-prefix replay is expensive
     for name, net in nets.items():
-        for variant in VARIANTS:
-            if (name, variant, seed) in done:
-                continue
-            kind = f"gru_{variant}"
-            family = FAMILY[variant]
-            train_res = train_model(
-                model_kind=kind,
-                vocabulary=vocab,
-                train_loader=data[name]["train"][family],
-                validation_loader=data[name]["val"][family],
-                allowed_mask=mask,
-                config=seed_config,
-                checkpoint_path=out_dir / "ckpt" / f"{name}_{variant}_s{seed}.pt",
-                use_logic=False,
-                marking_dim=len(net.places),
-                adjacency=net.adjacency_matrices if variant in ("gnn", "seq") else None,
-            )
-            eval_res = evaluate_model(
-                model=train_res.model,
-                data_loader=data[name]["test"][family],
-                allowed_mask=mask.to(device),
-                device=device,
-            )
-            with results_csv.open("a", newline="") as handle:
-                csv.writer(handle).writerow([
-                    name, variant, seed, f"{eval_res.accuracy:.6f}",
-                    f"{eval_res.top_k_accuracy:.6f}", f"{eval_res.forbidden_mass:.6f}",
-                ])
-            print(f"[seed {seed}] net {name:6s} {variant:<8} accuracy {eval_res.accuracy:.4f} "
-                  f"top-3 {eval_res.top_k_accuracy:.4f} forbidden {eval_res.forbidden_mass:.4f}",
-                  flush=True)
+        distinct, events = [], []
+        for _, trace in sample:
+            sequence = net.marking_sequence(trace)
+            distinct.append(len(set(sequence)))
+            events.append(len(trace))
+        print(f"[{name:6s}] {len(net.places):3d} places, {len(net.transitions):3d} transitions "
+              f"({sum(t.label is None for t in net.transitions)} silent) | "
+              f"fitting test traces {fit_fraction(net, splits.test):.1%} | "
+              f"distinct markings per trace {mean(distinct):.1f} over {mean(events):.1f} events")
 
-# -------------------------------------------------------------------- summary
-# from the complete CSV, so the summary is right even after a resume
-with results_csv.open() as handle:
-    rows = list(csv.DictReader(handle))
-accuracies: dict[tuple[str, str], dict[int, float]] = {}
-for row in rows:
-    accuracies.setdefault((row["net"], row["variant"]), {})[int(row["seed"])] = float(row["accuracy"])
+    # --------------------------------------------------------------------- the data
+    def loaders_for(net: PetriNet) -> dict:
+        def build(traces_map, shuffle):
+            base = PrefixLog.from_traces(traces_map, vocab)
+            marked = base.with_markings(net)
+            return {
+                "plain": base.data_loader(config.data.batch_size, shuffle=shuffle),
+                "marked": marked.data_loader(config.data.batch_size, shuffle=shuffle),
+                "sequences": marked.with_marking_sequences(net).data_loader(
+                    config.data.batch_size, shuffle=shuffle),
+            }
+        return {"train": build(splits.train, True),
+                "val": build(splits.validation, False),
+                "test": build(splits.test, False)}
 
-print("\n" + "=" * 70)
-print(f"ORACLE - HONEST, over {len(SEEDS)} seeds (Sepsis, GRU)")
-print("=" * 70)
-for variant in VARIANTS:
-    honest_by_seed = accuracies.get(("train", variant), {})
-    oracle_by_seed = accuracies.get(("oracle", variant), {})
-    seeds = sorted(set(honest_by_seed) & set(oracle_by_seed))
-    honest = [honest_by_seed[s] for s in seeds]
-    oracle = [oracle_by_seed[s] for s in seeds]
-    deltas = [o - h for o, h in zip(oracle, honest)]
-    print(f"{variant:<8} honest {mean(honest):.4f} | oracle {mean(oracle):.4f} | "
-          f"delta {mean(deltas)*100:+.2f} pt (std {stdev(deltas)*100:.2f}, "
-          f"positive {sum(d > 0 for d in deltas)}/{len(deltas)})")
-print("\nReading: a delta within the noise means the richer net does not help,\n"
-      "so the negative result does not depend on the quality of the net. A\n"
-      "positive delta is NOT a usable gain: it measures the leakage.")
+    print("\nbuilding the marked prefixes for both nets...", flush=True)
+    data = {name: loaders_for(net) for name, net in nets.items()}
+
+    # ------------------------------------------------------------------- training
+    # resume: cells already in the CSV are skipped (the run is long and closing
+    # the console kills the process).
+    done: set[tuple[str, str, int]] = set()
+    if results_csv.exists():
+        with results_csv.open() as handle:
+            for row in csv.DictReader(handle):
+                done.add((row["net"], row["variant"], int(row["seed"])))
+        print(f"resume: {len(done)} runs already in the CSV")
+    else:
+        with results_csv.open("w", newline="") as handle:
+            csv.writer(handle).writerow(("net", "variant", "seed", "accuracy", "top3", "forbidden"))
+
+    for seed in SEEDS:
+        seed_config = replace(config, seed=seed)
+
+        for name, net in nets.items():
+            for variant in VARIANTS:
+                if (name, variant, seed) in done:
+                    continue
+                kind = f"gru_{variant}"
+                family = FAMILY[variant]
+                train_res = train_model(
+                    model_kind=kind,
+                    vocabulary=vocab,
+                    train_loader=data[name]["train"][family],
+                    validation_loader=data[name]["val"][family],
+                    allowed_mask=mask,
+                    config=seed_config,
+                    checkpoint_path=out_dir / "ckpt" / f"{name}_{variant}_s{seed}.pt",
+                    use_logic=False,
+                    marking_dim=len(net.places),
+                    adjacency=net.adjacency_matrices if variant in ("gnn", "seq") else None,
+                )
+                eval_res = evaluate_model(
+                    model=train_res.model,
+                    data_loader=data[name]["test"][family],
+                    allowed_mask=mask.to(device),
+                    device=device,
+                )
+                with results_csv.open("a", newline="") as handle:
+                    csv.writer(handle).writerow([
+                        name, variant, seed, f"{eval_res.accuracy:.6f}",
+                        f"{eval_res.top_k_accuracy:.6f}", f"{eval_res.forbidden_mass:.6f}",
+                    ])
+                print(f"[seed {seed}] net {name:6s} {variant:<8} accuracy {eval_res.accuracy:.4f} "
+                      f"top-3 {eval_res.top_k_accuracy:.4f} forbidden {eval_res.forbidden_mass:.4f}",
+                      flush=True)
+
+    # -------------------------------------------------------------------- summary
+    # from the complete CSV, so the summary is right even after a resume
+    with results_csv.open() as handle:
+        rows = list(csv.DictReader(handle))
+    accuracies: dict[tuple[str, str], dict[int, float]] = {}
+    for row in rows:
+        accuracies.setdefault((row["net"], row["variant"]), {})[int(row["seed"])] = float(row["accuracy"])
+
+    print("\n" + "=" * 70)
+    print(f"ORACLE - HONEST, over {len(SEEDS)} seeds (Sepsis, GRU)")
+    print("=" * 70)
+    for variant in VARIANTS:
+        honest_by_seed = accuracies.get(("train", variant), {})
+        oracle_by_seed = accuracies.get(("oracle", variant), {})
+        seeds = sorted(set(honest_by_seed) & set(oracle_by_seed))
+        honest = [honest_by_seed[s] for s in seeds]
+        oracle = [oracle_by_seed[s] for s in seeds]
+        deltas = [o - h for o, h in zip(oracle, honest)]
+        print(f"{variant:<8} honest {mean(honest):.4f} | oracle {mean(oracle):.4f} | "
+              f"delta {mean(deltas)*100:+.2f} pt (std {stdev(deltas)*100:.2f}, "
+              f"positive {sum(d > 0 for d in deltas)}/{len(deltas)})")
+    print("\nReading: a delta within the noise means the richer net does not help,\n"
+          "so the negative result does not depend on the quality of the net. A\n"
+          "positive delta is NOT a usable gain: it measures the leakage.")
+
+
+if __name__ == "__main__":
+    main()

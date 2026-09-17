@@ -1,87 +1,91 @@
 # Quick check: init of HeteroGraphEncoder (buffers, shapes, parameters)
 
 import sys
+import tempfile
 from pathlib import Path
+
+import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from nspm.config import ExperimentConfig
 from nspm.data.loader import read_log
-from nspm.data.preparation import TraceSplits, TraceUtils
-from nspm.learning.models import HeteroGraphEncoder
+from nspm.data.preparation import ActivityVocabulary, TraceSplits, TraceUtils
+from nspm.learning.models import HeteroGraphEncoder, build_model, load_checkpoint, save_checkpoint
 from nspm.process.petrinet import PetriNet
 
-log_path = next((ROOT / "datasets" / "Sepsis_Case").glob("*.xes"))
-frame = read_log(log_path)
-traces = TraceUtils.extract_traces(frame)
-splits = TraceSplits.from_traces(traces)
-net = PetriNet.from_traces(splits.train)
-a_pt, a_tp = net.adjacency_matrices
 
-enc = HeteroGraphEncoder(a_pt, a_tp, hidden_dim=16)
-print("a_pt_t shape:", tuple(enc.a_pt_t.shape), "(expected: (34, 26), the transpose of 26x34)")
-print("a_tp_t shape:", tuple(enc.a_tp_t.shape), "(expected: (26, 34))")
-print("buffers in the state_dict:", [k for k in enc.state_dict() if k.startswith("a_")])
-print("trainable parameters:", sorted({n.split(".")[0] for n, _ in enc.named_parameters()}))
-print("INIT OK")
+def main() -> None:
+    log_path = next((ROOT / "datasets" / "Sepsis_Case").glob("*.xes"))
+    frame = read_log(log_path)
+    traces = TraceUtils.extract_traces(frame)
+    splits = TraceSplits.from_traces(traces)
+    net = PetriNet.from_traces(splits.train)
+    a_pt, a_tp = net.adjacency_matrices
 
-# --- forward smoke test -----------------------------------------------------
-import torch
+    enc = HeteroGraphEncoder(a_pt, a_tp, hidden_dim=16)
+    print("a_pt_t shape:", tuple(enc.a_pt_t.shape), "(expected: (34, 26), the transpose of 26x34)")
+    print("a_tp_t shape:", tuple(enc.a_tp_t.shape), "(expected: (26, 34))")
+    print("buffers in the state_dict:", [k for k in enc.state_dict() if k.startswith("a_")])
+    print("trainable parameters:", sorted({n.split(".")[0] for n, _ in enc.named_parameters()}))
+    print("INIT OK")
 
-batch = torch.randint(0, 3, (5, len(net.places)))  # 5 fake markings, values 0-2
-out = enc(batch)
-assert out.shape == (5, 16), f"expected (5, 16), got {tuple(out.shape)}"
-print("forward:", tuple(batch.shape), "->", tuple(out.shape))
+    # --- forward smoke test -----------------------------------------------------
 
-# The gradient must reach the Linear layers, not the buffers (the graph is a fact).
-out.sum().backward()
-for name, param in enc.named_parameters():
-    assert param.grad is not None, f"no gradient on {name}"
-assert enc.a_pt_t.grad is None and enc.a_tp_t.grad is None
-print("gradients: every Linear OK, buffers without gradient")
+    batch = torch.randint(0, 3, (5, len(net.places)))  # 5 fake markings, values 0-2
+    out = enc(batch)
+    assert out.shape == (5, 16), f"expected (5, 16), got {tuple(out.shape)}"
+    print("forward:", tuple(batch.shape), "->", tuple(out.shape))
 
-# Property of the max readout: an all-zero marking differs from an active one.
-zero = enc(torch.zeros(1, len(net.places), dtype=torch.long))
-active = enc(batch[:1])
-print("distinct readouts (zero vs active):", not torch.allclose(zero, active))
-print("FORWARD OK")
+    # The gradient must reach the Linear layers, not the buffers (the graph is a fact).
+    out.sum().backward()
+    for name, param in enc.named_parameters():
+        assert param.grad is not None, f"no gradient on {name}"
+    assert enc.a_pt_t.grad is None and enc.a_tp_t.grad is None
+    print("gradients: every Linear OK, buffers without gradient")
 
-# --- wiring: build_model on the three rungs + checkpoint round-trip ----------
-import tempfile
+    # Property of the max readout: an all-zero marking differs from an active one.
+    zero = enc(torch.zeros(1, len(net.places), dtype=torch.long))
+    active = enc(batch[:1])
+    print("distinct readouts (zero vs active):", not torch.allclose(zero, active))
+    print("FORWARD OK")
 
-from nspm.config import ExperimentConfig
-from nspm.data.preparation import ActivityVocabulary
-from nspm.learning.models import build_model, load_checkpoint, save_checkpoint
+    # --- wiring: build_model on the three rungs + checkpoint round-trip ----------
 
-vocab = ActivityVocabulary.from_traces(splits.train.values())
-config = ExperimentConfig()
-n_places = len(net.places)
-adjacency = (a_pt, a_tp)
+    vocab = ActivityVocabulary.from_traces(splits.train.values())
+    config = ExperimentConfig()
+    n_places = len(net.places)
+    adjacency = (a_pt, a_tp)
 
-tokens = torch.randint(1, len(vocab.tokens), (4, 7))
-lengths = torch.tensor([7, 5, 3, 2])
-markings = torch.randint(0, 3, (4, n_places))
+    tokens = torch.randint(1, len(vocab.tokens), (4, 7))
+    lengths = torch.tensor([7, 5, 3, 2])
+    markings = torch.randint(0, 3, (4, n_places))
 
-variants = {
-    "gru": {},
-    "gru_marking": {"marking_dim": n_places},
-    "gru_gnn": {"marking_dim": n_places, "adjacency": adjacency},
-}
-for kind, kwargs in variants.items():
-    model = build_model(kind, len(vocab.tokens), len(vocab.activities), vocab.pad_id, config.model, **kwargs)
+    variants = {
+        "gru": {},
+        "gru_marking": {"marking_dim": n_places},
+        "gru_gnn": {"marking_dim": n_places, "adjacency": adjacency},
+    }
+    for kind, kwargs in variants.items():
+        model = build_model(kind, len(vocab.tokens), len(vocab.activities), vocab.pad_id, config.model, **kwargs)
+        model.eval()
+        logits = model(tokens, lengths, markings if kwargs else None)
+        encoder_name = type(model.marking_encoder).__name__ if model.marking_encoder is not None else "None"
+        assert logits.shape == (4, len(vocab.activities))
+        print(f"{kind:13s} logits {tuple(logits.shape)}  encoder: {encoder_name}")
+
+    # The gnn checkpoint has to rebuild both graph and weights on its own.
+    ckpt = Path(tempfile.gettempdir()) / "_gnn_roundtrip.pt"
+    model = build_model("gru_gnn", len(vocab.tokens), len(vocab.activities), vocab.pad_id, config.model, n_places, adjacency)
     model.eval()
-    logits = model(tokens, lengths, markings if kwargs else None)
-    encoder_name = type(model.marking_encoder).__name__ if model.marking_encoder is not None else "None"
-    assert logits.shape == (4, len(vocab.activities))
-    print(f"{kind:13s} logits {tuple(logits.shape)}  encoder: {encoder_name}")
+    save_checkpoint(ckpt, model, "gru_gnn", vocab, config, logic_enabled=False, best_epoch=1, stopped_early=False)
+    loaded, _, payload = load_checkpoint(ckpt)
+    assert payload["adjacency"] == adjacency, "the adjacencies in the payload do not match"
+    assert torch.allclose(model(tokens, lengths, markings), loaded(tokens, lengths, markings), atol=1e-6)
+    print("checkpoint round-trip: adjacencies in the payload and identical predictions")
+    print("WIRING OK")
 
-# The gnn checkpoint has to rebuild both graph and weights on its own.
-ckpt = Path(tempfile.gettempdir()) / "_gnn_roundtrip.pt"
-model = build_model("gru_gnn", len(vocab.tokens), len(vocab.activities), vocab.pad_id, config.model, n_places, adjacency)
-model.eval()
-save_checkpoint(ckpt, model, "gru_gnn", vocab, config, logic_enabled=False, best_epoch=1, stopped_early=False)
-loaded, _, payload = load_checkpoint(ckpt)
-assert payload["adjacency"] == adjacency, "the adjacencies in the payload do not match"
-assert torch.allclose(model(tokens, lengths, markings), loaded(tokens, lengths, markings), atol=1e-6)
-print("checkpoint round-trip: adjacencies in the payload and identical predictions")
-print("WIRING OK")
+
+if __name__ == "__main__":
+    main()
