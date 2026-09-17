@@ -96,4 +96,7 @@ sbatch official_experiments/run_slurm.sh train Sepsis_Case all
 
 Without variants the job runs `lll gll` only, the two methods added last to the grids; `all` expands to the nine methods, and any explicit list is passed through as is.
 
-The job writes under `runs/`; its output was copied into `protocol-test/` and `protocol-train/`.
+The job writes under `runs/`. Each log of the thesis ran in three launches (seed 0, seeds 1-4, seeds 5-9), and `merge_runs.py` joins them into the file under `protocol-test/` or `protocol-train/`, adding the `protocol` and `source_dir` columns:
+```
+python official_experiments/scripts/merge_runs.py --protocol test --dataset Sepsis_Case --sources noise_curve_b noise_curve_b_s14_Sepsis_Case noise_curve_b_s59_Sepsis_Case
+```

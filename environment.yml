@@ -4,9 +4,8 @@
 #     conda activate tleaf
 #
 # Build strings are dropped so the file is not pinned to this machine. The
-# torch wheels carry a +cu128 local version and do not come from PyPI:
-#
-#     pip install torch==2.7.0+cu128 --index-url https://download.pytorch.org/whl/cu128
+# +cu128 wheels come from the PyTorch and PyG indexes named in the pip section;
+# conda env create reads them.
 #
 # Run everything with the environment ACTIVATED, never by calling
 # envs/tleaf/python.exe directly. On Windows the BLAS libraries numpy needs
@@ -149,6 +148,8 @@ dependencies:
   - zlib-ng=2.3.3
   - zstd=1.5.7
   - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu128
+      - --find-links https://data.pyg.org/whl/torch-2.7.0+cu128.html
       - aiohappyeyeballs==2.6.2
       - aiohttp==3.14.1
       - aiosignal==1.4.0
