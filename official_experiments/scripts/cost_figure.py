@@ -31,9 +31,9 @@ LABELS = {
     "baseline": (-0.035, -8, "right"),
 }
 
-#: The test protocol. The train one moves the points by a few percent and would
-#: double the cloud; \cref{tab:res-summary} reports both.
-PROTOCOL = "B"
+#: The thesis figure pools the two protocols; one protocol alone can be asked
+#: for by name. The grids keep the letters.
+LETTER = {"test": "B", "train": "C"}
 
 #: Height is a page budget, not a taste. The subsection holds a table, this
 #: figure and its two captions inside one page, and anything taller pushes the
@@ -65,23 +65,23 @@ def cost(grid: pd.DataFrame) -> pd.Series:
 
 
 # Percent of the baseline's ``metric`` that a model removes
-def removed(grid: pd.DataFrame, metric: str) -> pd.Series:
+def removed(grid: pd.DataFrame, metric: str, protocol: str) -> pd.Series:
     cells = (grid.groupby(["protocol", "dataset", "noise", "variant"],
                           observed=True)[metric].median().unstack("variant"))
-    panel = cells.xs(PROTOCOL, level="protocol")
+    panel = cells if protocol == "both" else cells.xs(LETTER[protocol], level="protocol")
     base = panel["baseline"]
     return pd.Series({v: -100 * (panel[v] - base).mean() / abs(base.mean())
                       for v in VARIANTS})
 
 
-def draw(grid: pd.DataFrame, path: Path) -> None:
+def draw(grid: pd.DataFrame, path: Path, protocol: str) -> None:
     plt.rcParams.update(STYLE)
     fig = plt.figure(figsize=FIGSIZE)
     axis = fig.add_axes([0.105, 0.135, 0.875, 0.700])
 
     time = cost(grid)
-    mass = removed(grid, "forbidden_net")
-    violations = removed(grid, "suffix_dfa_violation_net")
+    mass = removed(grid, "forbidden_net", protocol)
+    violations = removed(grid, "suffix_dfa_violation_net", protocol)
 
     axis.axhline(0, color=AXIS, linewidth=0.8, linestyle=(0, (4, 2)), zorder=1)
     for key in VARIANTS:
@@ -129,6 +129,9 @@ def draw(grid: pd.DataFrame, path: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Draw the training-cost figure of the results chapter.")
+    parser.add_argument("--protocol", choices=["both", *sorted(LETTER)], default="both",
+                        help="the protocol the reductions are taken from; "
+                             "'both' pools the two, which is what the thesis shows")
     parser.add_argument("--out", type=Path, default=FIGURES)
     parser.add_argument("--no-thesis-copy", action="store_true",
                         help="do not mirror the figure into the thesis")
@@ -137,15 +140,16 @@ def main() -> None:
     grid = pd.read_csv(GRID_CSV)
     grid = grid[grid["variant"].isin(VARIANTS)]
 
-    print("the coordinates of the eight points:")
+    print(f"the coordinates of the eight points, {args.protocol} protocol:")
     print(pd.DataFrame({
         "time of one epoch": cost(grid),
-        "forbidden mass removed": removed(grid, "forbidden_net"),
-        "suffix violations removed": removed(grid, "suffix_dfa_violation_net"),
+        "forbidden mass removed": removed(grid, "forbidden_net", args.protocol),
+        "suffix violations removed": removed(grid, "suffix_dfa_violation_net", args.protocol),
     }).rename(index=VARIANTS).round(2).to_string())
 
-    path = args.out / "training-cost.png"
-    draw(grid, path)
+    name = "training-cost" if args.protocol == "both" else f"training-cost_{args.protocol}"
+    path = args.out / f"{name}.png"
+    draw(grid, path, args.protocol)
     print(f"\nwrote {shown(path)}")
 
     if not args.no_thesis_copy:

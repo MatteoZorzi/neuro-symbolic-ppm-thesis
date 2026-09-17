@@ -63,6 +63,7 @@ python official_experiments/scripts/metric_figures.py --metric forbidden_net --p
 python official_experiments/scripts/metric_figures.py --metric suffix_dfa_violation_net --paired
 python official_experiments/scripts/metric_figures.py --metric accuracy --paired
 python official_experiments/scripts/metric_figures.py --metric dl_similarity --paired
+python official_experiments/scripts/cd_diagram.py --metric forbidden_net
 python official_experiments/scripts/cost_figure.py
 python official_experiments/scripts/architecture_figures.py
 ```
